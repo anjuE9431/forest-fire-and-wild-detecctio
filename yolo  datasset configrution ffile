@@ -1,0 +1,10 @@
+def create_dataset_yaml(self):
+        """Create YOLO dataset configuration file"""
+        dataset_config = {
+            'path': os.path.abspath('datasets/fire'),
+            'train': 'train/images',
+            'val': 'val/images',
+            'test': 'test/images',
+            'nc': len(self.model_config['classes']),
+            'names': self.model_config['classes']
+        }
