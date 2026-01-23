@@ -1,0 +1,13 @@
+        """Initialize YOLO model for training"""
+def prepare_model(self):
+        """Initialize YOLO model for training"""
+        # Use nano model for fastest training
+        model = YOLO('yolov8n.pt')
+        print("[OK] Model initialized with YOLOv8n (fastest)")
+        return model
+
+    def train(self):
+        """Train the fire detection model with optimized settings"""
+        print("\n" + "="*60)
+        print("Fast Fire Detection Model Training")
+        print("="*60 + "\n")
