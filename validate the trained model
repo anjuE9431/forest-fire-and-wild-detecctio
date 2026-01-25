@@ -1,0 +1,25 @@
+    def validate(self, model_path=None):
+        """Validate the trained model"""
+        if model_path is None:
+            model_path = self.model_config['model_path']
+
+        if not os.path.exists(model_path):
+            print(f"[X] Model not found at {model_path}")
+            return None
+
+        print("\n" + "="*60)
+        print("Validating Fire Detection Model")
+        print("="*60 + "\n")
+
+        model = YOLO(model_path)
+        results = model.val(data='datasets/fire/data.yaml', imgsz=416)
+
+        print("\nValidation Metrics:")
+        print(f"  mAP50: {results.box.map50:.4f}")
+        print(f"  mAP50-95: {results.box.map:.4f}")
+        print(f"  Precision: {results.box.p[0]:.4f}")
+        print(f"  Recall: {results.box.r[0]:.4f}")
+
+        return results
+
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
