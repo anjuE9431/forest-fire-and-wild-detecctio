@@ -1,0 +1,11 @@
+class FastFireDetectionTrainer:
+    def __init__(self, config_path='config.yaml'):
+        """Initialize the fire detection trainer"""
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+
+        self.fire_config = self.config['training']['fire']
+        self.model_config = self.config['models']['fire_detection']
+
+        # Create directories
+        self.setup_directories()
