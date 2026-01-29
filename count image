@@ -1,0 +1,23 @@
+ # Count images
+    train_count = len(list(train_images.glob('*.jpg'))) + len(list(train_images.glob('*.png')))
+    val_images = Path('datasets/fire/val/images')
+    val_count = len(list(val_images.glob('*.jpg'))) + len(list(val_images.glob('*.png'))) if val_images.exists() else 0
+
+    print(f"\nDataset size:")
+    print(f"  Training: {train_count} images")
+    print(f"  Validation: {val_count} images")
+
+    if train_count < 50:
+        print("\n[!] WARNING: Very small dataset!")
+        print("    Training will work but accuracy may be limited.")
+
+    # Confirm before starting
+    print("\n" + "="*60)
+    proceed = input("Start fast training? (y/n): ")
+    if proceed.lower() != 'y':
+        print("Training cancelled.")
+        return
+
+    # Start training
+    try:
+        results = trainer.train()
