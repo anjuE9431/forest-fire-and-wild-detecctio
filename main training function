@@ -1,0 +1,23 @@
+def main():
+    """Main training function"""
+    print("\n" + "="*60)
+    print("   Fast Fire Detection Training")
+    print("   Optimized for Speed")
+    print("="*60)
+
+    # Initialize trainer
+    trainer = FastFireDetectionTrainer()
+
+    # Check if dataset exists
+    train_images = Path('datasets/fire/train/images')
+    if not train_images.exists() or not list(train_images.glob('*')):
+        print("\n[X] WARNING: No training images found!")
+        print("Please add your training data to:")
+        print("  - datasets/fire/train/images/  (training images)")
+        print("  - datasets/fire/train/labels/  (YOLO format labels)")
+        print("  - datasets/fire/val/images/    (validation images)")
+        print("  - datasets/fire/val/labels/    (validation labels)")
+        print("\nLabel format: <class_id> <x_center> <y_center> <width> <height>")
+        print("  - fire: class 0")
+        print("  - smoke: class 1")
+        return
