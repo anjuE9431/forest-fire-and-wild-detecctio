@@ -1,0 +1,19 @@
+
+import os
+import yaml
+from ultralytics import YOLO
+import torch
+from pathlib import Path
+import shutil
+from datetime import datetime
+
+class FastAnimalDetectionTrainer:
+    def __init__(self, config_path='config.yaml'):
+
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+
+        self.animal_config = self.config['training']['animal']
+        self.model_config = self.config['models']['animal_detection']
+
+        self.setup_directories()
