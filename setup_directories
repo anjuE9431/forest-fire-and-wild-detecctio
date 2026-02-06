@@ -1,0 +1,15 @@
+def setup_directories(self):
+
+        dirs = [
+            'datasets/animals/train/images',
+            'datasets/animals/train/labels',
+            'datasets/animals/val/images',
+            'datasets/animals/val/labels',
+            'datasets/animals/test/images',
+            'datasets/animals/test/labels',
+            'models',
+            'runs/animals',
+            'logs'
+        ]
+        for dir_path in dirs:
+            Path(dir_path).mkdir(parents=True, exist_ok=True)
