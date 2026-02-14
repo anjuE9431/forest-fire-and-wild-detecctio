@@ -1,0 +1,10 @@
+ try:
+            # Train the model
+            print("Starting training...\n")
+            results = model.train(**train_params)
+
+            # Save the best model
+            best_model_path = os.path.join(train_params['project'],
+                                          train_params['name'],
+                                          'weights',
+                                          'best.pt')
