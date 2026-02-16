@@ -1,0 +1,15 @@
+if os.path.exists(best_model_path):
+                shutil.copy(best_model_path, self.model_config['model_path'])
+                print(f"\n[OK] Best model saved to: {self.model_config['model_path']}")
+
+            # Print training summary
+            print("\n" + "="*60)
+            print("Training Completed Successfully!")
+            print("="*60)
+            print(f"Results saved in: {train_params['project']}/{train_params['name']}")
+
+            return results
+
+        except Exception as e:
+            print(f"\n[X] Training failed: {str(e)}")
+            raise
