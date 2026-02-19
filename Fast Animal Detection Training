@@ -1,0 +1,19 @@
+
+def main():
+    """Main training function"""
+    print("\n" + "="*60)
+    print("   Fast Animal Detection Training")
+    print("   Optimized for Speed with Small Dataset")
+    print("="*60)
+
+    # Initialize trainer
+    trainer = FastAnimalDetectionTrainer()
+
+    # Check if dataset exists
+    train_images = Path('datasets/animals/train/images')
+    if not train_images.exists() or not list(train_images.glob('*')):
+        print("\n[X] WARNING: No training images found!")
+        print("Please ensure dataset is prepared:")
+        print("  1. Run: python fix_dataset.py")
+        print("  2. Run: python cleanup_orphans.py")
+        return
