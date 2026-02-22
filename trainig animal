@@ -1,0 +1,11 @@
+if train_count < 50:
+        print("\n[!] WARNING: Very small dataset!")
+        print("    Training will work but accuracy may be limited.")
+        print("    Consider adding more images for better results.")
+
+    # Confirm before starting
+    print("\n" + "="*60)
+    proceed = input("Start fast training? (y/n): ")
+    if proceed.lower() != 'y':
+        print("Training cancelled.")
+        return
