@@ -1,0 +1,23 @@
+ # Start training
+    try:
+        results = trainer.train()
+
+        # Validate after training
+        print("\nRunning validation on best model...")
+        trainer.validate()
+
+        print("\n[OK] Training pipeline completed successfully!")
+        print("\nNext steps:")
+        print("  1. Check results in runs/animals/")
+        print("  2. Test model: python test_model.py --model animal --source webcam")
+        print("  3. Run Flask app: python app.py")
+
+    except KeyboardInterrupt:
+        print("\n\n[!] Training interrupted by user")
+    except Exception as e:
+        print(f"\n[X] Error during training: {str(e)}")
+        raise
+
+
+if __name__ == '__main__':
+    main()
