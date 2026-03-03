@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics — SENTINEL</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,600&family=Outfit:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+
+        <!-- Header -->
+        <header class="header glass-panel">
+            <div class="logo">
+                <div class="logo-icon"><i class="fas fa-chart-area"></i></div>
+                <div>
+                    <h1>Analytics &amp; Heatmaps</h1>
+                    <span class="logo-sub">Detection Data Visualization</span>
+                </div>
+            </div>
+            <div class="header-info">
+                <a href="{{ url_for('index') }}" class="logout-btn"><i class="fas fa-arrow-left"></i> Dashboard</a>
+                <div class="user-info">
+                    <span class="user-badge {{ user.role }}"><i class="fas fa-user"></i> {{ user.username }}</span>
+                    <a href="{{ url_for('logout') }}" class="logout-btn" style="color:var(--ember)"><i class="fas fa-sign-out-alt"></i></a>
+                </div>
+            </div>
+        </header>
+
+        <!-- Generate Controls -->
+        <div class="glass-panel" style="padding:26px 28px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                <i class="fas fa-layer-group" style="color:var(--biolum);font-size:1.05rem;"></i>
+                <h2 style="font-family:var(--font-mono);font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;margin:0;color:var(--text-secondary);">Generate Heatmaps</h2>
+            </div>
+            <p style="color:var(--text-muted);margin-bottom:20px;font-size:0.8rem;font-family:var(--font-mono);letter-spacing:0.04em;">
+                Generate visual analytics from historical detection data
+            </p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:13px;margin-bottom:16px;">
+                <button class="analytics-btn btn-large" data-analytics-action="generate" data-analytics-days="7">
+                    <i class="fas fa-calendar-week"></i>
+                    <span>Last 7 Days</span>
+                    <small>Recent activity</small>
+                </button>
+                <button class="analytics-btn btn-large" data-analytics-action="generate" data-analytics-days="30">
+                    <i class="fas fa-calendar-alt"></i>
+                    <span>Last 30 Days</span>
+                    <small>Monthly trends</small>
+                </button>
+                <button class="analytics-btn btn-large" data-analytics-action="generate" data-analytics-days="90">
+                    <i class="fas fa-calendar"></i>
+                    <span>Last 90 Days</span>
+                    <small>Quarterly overview</small>
+                </button>
+            </div>
+            <div id="analytics-status" style="display:none;"></div>
+        </div>
+
+        <!-- Heatmap Gallery -->
+        <div class="glass-panel" style="padding:26px 28px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <i class="fas fa-images" style="color:var(--biolum);font-size:1.05rem;"></i>
+                    <h2 style="font-family:var(--font-mono);font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;margin:0;color:var(--text-secondary);">Generated Heatmaps</h2>
+                </div>
+                <button class="btn btn-primary" id="refresh-btn">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+            <div id="heatmap-gallery" class="heatmap-grid">
+                <div class="loading-indicator" style="grid-column:1/-1;">
+                    <i class="fas fa-spinner fa-spin"></i> Loading heatmaps...
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Lightbox modal -->
+    <div class="modal" id="lightbox-modal" role="dialog" aria-modal="true">
+        <div class="image-modal-content" style="text-align:center;">
+            <button class="modal-close-btn" id="lightbox-close">&times;</button>
+            <img id="lightbox-img" src="" alt="Heatmap">
+        </div>
+    </div>
+
+    <script>
+    const Toast = (() => {
+        let container = null;
+        function getContainer() {
+            if (!container) { container = document.createElement('div'); container.className = 'toast-container'; document.body.appendChild(container); }
+            return container;
+        }
+        function show(message, type = 'info', duration = 4000) {
+            const icons = { success:'fa-check-circle', error:'fa-exclamation-circle', warning:'fa-exclamation-triangle', info:'fa-info-circle', loading:'fa-spinner fa-spin' };
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i><span>${message}</span><button class="toast-close" aria-label="Close"><i class="fas fa-times"></i></button>`;
+            toast.querySelector('.toast-close').addEventListener('click', () => dismiss(toast));
+            getContainer().appendChild(toast);
+            requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('show')));
+            if (duration > 0) setTimeout(() => dismiss(toast), duration);
+            return toast;
+        }
+        function dismiss(toast) {
+            if (!toast || !toast.isConnected) return;
+            toast.classList.remove('show'); toast.classList.add('hide');
+            toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+        }
+        return { success: m => show(m,'success'), error: m => show(m,'error'), loading: m => show(m,'loading',0), dismiss };
+    })();
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadHeatmaps();
+        document.getElementById('refresh-btn').addEventListener('click', loadHeatmaps);
+        document.querySelectorAll('[data-analytics-action="generate"]').forEach(btn => {
+            btn.addEventListener('click', e => { const days = parseInt(e.currentTarget.dataset.analyticsDays); generateHeatmaps(days); });
+        });
+        document.getElementById('lightbox-close').addEventListener('click', () => { document.getElementById('lightbox-modal').style.display = 'none'; });
+        document.getElementById('lightbox-modal').addEventListener('click', e => { if (e.target === document.getElementById('lightbox-modal')) document.getElementById('lightbox-modal').style.display = 'none'; });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('lightbox-modal').style.display = 'none'; });
+    });
+
+    async function generateHeatmaps(days) {
+        const statusEl = document.getElementById('analytics-status');
+        statusEl.style.display = 'flex';
+        statusEl.className = 'status-message loading';
+        statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating heatmaps...';
+        const loading = Toast.loading(`Generating ${days}-day heatmaps...`);
+        try {
+            const res = await fetch('/api/analytics/heatmaps', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days }) });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            Toast.dismiss(loading); Toast.success(`${days}-day heatmaps generated!`);
+            statusEl.className = 'status-message success';
+            statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Heatmaps generated successfully!';
+            setTimeout(() => { loadHeatmaps(); statusEl.style.display = 'none'; }, 2200);
+        } catch (err) {
+            Toast.dismiss(loading); Toast.error('Failed to generate heatmaps');
+            statusEl.className = 'status-message error';
+            statusEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Generation failed. Try again.';
+        }
+    }
+
+    async function loadHeatmaps() {
+        const gallery = document.getElementById('heatmap-gallery');
+        gallery.innerHTML = '<div class="loading-indicator" style="grid-column:1/-1;"><i class="fas fa-spinner fa-spin"></i> Loading heatmaps...</div>';
+        try {
+            const res = await fetch('/api/analytics/heatmaps/list');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            gallery.innerHTML = '';
+            if (!data.heatmaps || data.heatmaps.length === 0) {
+                gallery.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon"><i class="fas fa-chart-area"></i></div><div class="empty-state-title">No Heatmaps Yet</div><div class="empty-state-description">Use the buttons above to generate heatmaps from your detection data.</div></div>`;
+                return;
+            }
+            data.heatmaps.forEach((hm, i) => {
+                const item = document.createElement('div');
+                item.className = 'heatmap-item fade-in';
+                item.style.animationDelay = `${i * 0.06}s`;
+                item.innerHTML = `<img src="${hm.url}" alt="${hm.name}" loading="lazy"><div class="heatmap-info"><i class="fas fa-image" style="color:var(--biolum);"></i>${hm.name}</div>`;
+                item.addEventListener('click', () => { document.getElementById('lightbox-img').src = hm.url; document.getElementById('lightbox-modal').style.display = 'flex'; });
+                gallery.appendChild(item);
+            });
+        } catch (err) {
+            gallery.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon"><i class="fas fa-exclamation-circle"></i></div><div class="empty-state-title">Failed to load heatmaps</div></div>`;
+        }
+    }
+    </script>
+</body>
+</html>
