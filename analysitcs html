@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL — Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,600&family=Outfit:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+
+        <!-- ── Header ─────────────────────────────────────── -->
+        <header class="header glass-panel">
+            <div class="logo">
+                <div class="logo-icon"><i class="fas fa-tree"></i></div>
+                <div>
+                    <h1>SENTINEL <span class="stat-badge new">Multi-User</span></h1>
+                    <span class="logo-sub">Forest Fire &amp; Wildlife Monitoring</span>
+                </div>
+            </div>
+            <div class="header-info">
+                <span id="current-time" aria-live="polite"></span>
+                <div class="user-info">
+                    <span class="user-badge {{ user.role }}">
+                        <i class="fas fa-user"></i> {{ user.username }} · {{ user.role }}
+                    </span>
+                    {% if user.has_permission('admin') %}
+                    <a href="{{ url_for('admin_database') }}" class="logout-btn" style="color:var(--ember);">
+                        <i class="fas fa-database"></i> Admin
+                    </a>
+                    {% endif %}
+                    <button class="logout-btn" data-action="show-shortcuts" style="color:var(--purple);">
+                        <i class="fas fa-keyboard"></i>
+                    </button>
+                    <a href="{{ url_for('logout') }}" class="logout-btn" style="color:var(--ember);">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </a>
+                </div>
+                <span class="status-indicator" id="system-status">
+                    <i class="fas fa-circle"></i> Online
+                </span>
+            </div>
+        </header>
+
+        <!-- ── Stats ──────────────────────────────────────── -->
+        <div class="stats-container">
+            <div class="stat-card fire">
+                <div class="stat-icon"><i class="fas fa-fire"></i></div>
+                <div class="stat-content">
+                    <h3>Fire Events</h3>
+                    <p class="stat-value" id="fire-count">0</p>
+                </div>
+            </div>
+            <div class="stat-card animal">
+                <div class="stat-icon"><i class="fas fa-paw"></i></div>
+                <div class="stat-content">
+                    <h3>Wildlife Events</h3>
+                    <p class="stat-value" id="animal-count">0</p>
+                </div>
+            </div>
+            <div class="stat-card camera">
+                <div class="stat-icon"><i class="fas fa-video"></i></div>
+                <div class="stat-content">
+                    <h3>Active Cameras</h3>
+                    <p class="stat-value" id="camera-count">0</p>
+                </div>
+            </div>
+            <div class="stat-card alert">
+                <div class="stat-icon"><i class="fas fa-camera"></i></div>
+                <div class="stat-content">
+                    <h3>Screenshots</h3>
+                    <p class="stat-value" id="screenshot-count">0</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Main Grid ───────────────────────────────────── -->
+        <div class="main-grid">
+
+            <!-- Left Column -->
+            <div class="left-column">
+
+                {% if user.has_permission('view_analytics') %}
+                <div class="confidence-controls">
+                    <h2><i class="fas fa-chart-bar"></i> Analytics</h2>
+                    <p style="color:var(--text-muted);margin-bottom:12px;font-size:0.8rem;font-family:var(--font-mono);letter-spacing:0.04em;">Visual heatmaps &amp; detection trends</p>
+                    <a href="{{ url_for('analytics_page') }}" class="analytics-btn" style="text-decoration:none;">
+                        <i class="fas fa-chart-line"></i> Open Analytics Dashboard
+                    </a>
+                    <div id="analytics-status" style="margin-top:10px;font-size:0.82rem;"></div>
+                </div>
+                {% endif %}
+
+                {% if user.has_permission('configure_system') %}
+                <div class="confidence-controls">
+                    <h2><i class="fas fa-sliders-h"></i> Detection Thresholds</h2>
+                    <div class="slider-container">
+                        <div class="slider-label">
+                            <span>Fire / Smoke</span>
+                            <span class="slider-value" id="fire-threshold-value">50%</span>
+                        </div>
+                        <input type="range" min="10" max="95" value="50" class="confidence-slider" id="fire-threshold" aria-label="Fire confidence threshold">
+                        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">Lower = More sensitive</p>
+                    </div>
+                    <div class="slider-container">
+                        <div class="slider-label">
+                            <span>Wildlife</span>
+                            <span class="slider-value" id="animal-threshold-value">60%</span>
+                        </div>
+                        <input type="range" min="10" max="95" value="60" class="confidence-slider" id="animal-threshold" aria-label="Animal confidence threshold">
+                        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">Adjust to reduce false positives</p>
+                    </div>
+                    <button class="analytics-btn" style="background:linear-gradient(135deg,rgba(232,98,26,.4),rgba(180,60,10,.5));margin-top:4px;" data-action="reset-thresholds">
+                        <i class="fas fa-undo"></i> Reset to Defaults
+                    </button>
+                </div>
+                {% endif %}
+
+                <!-- Alert Panel -->
+                <aside class="alert-panel">
+                    <h2><i class="fas fa-bell"></i> Recent Alerts</h2>
+                    <div class="alert-list" id="alert-list">
+                        <p class="no-alerts">No alerts at this time</p>
+                    </div>
+                </aside>
+
+            </div>
+
+            <!-- Right Column -->
+            <div class="right-column">
+                <div class="tab-container">
+                    <div class="tabs" role="tablist">
+                        {% if user.has_permission('view_cameras') %}
+                        <div class="tab active" data-tab="live" role="tab" aria-selected="true">
+                            <i class="fas fa-broadcast-tower"></i> Live Feed
+                        </div>
+                        {% endif %}
+                        {% if user.has_permission('view_analytics') %}
+                        <div class="tab" data-tab="screenshots" role="tab" aria-selected="false">
+                            <i class="fas fa-camera"></i> Screenshots
+                        </div>
+                        <div class="tab" data-tab="videos" role="tab" aria-selected="false">
+                            <i class="fas fa-film"></i> Recordings
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {% if user.has_permission('view_cameras') %}
+                    <div id="live-tab" class="tab-content active" role="tabpanel">
+                        <div class="camera-grid" id="camera-grid"></div>
+                    </div>
+                    {% endif %}
+
+                    {% if user.has_permission('view_analytics') %}
+                    <div id="screenshots-tab" class="tab-content" role="tabpanel">
+                        <div style="display:flex;gap:7px;margin-bottom:11px;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" data-screenshot-filter="fire"><i class="fas fa-fire"></i> Fire</button>
+                            <button class="btn btn-secondary" data-screenshot-filter="animal"><i class="fas fa-paw"></i> Wildlife</button>
+                            <button class="btn btn-secondary" data-screenshot-filter="all"><i class="fas fa-th"></i> All</button>
+                        </div>
+                        <div class="screenshot-gallery" id="screenshot-gallery"></div>
+                    </div>
+
+                    <div id="videos-tab" class="tab-content" role="tabpanel">
+                        <div id="video-gallery"></div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detection Details Modal -->
+    <div class="modal" id="detection-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-content glass-panel" style="width:600px;max-width:92vw;max-height:80vh;overflow-y:auto;">
+            <div class="modal-header">
+                <h2 id="modal-title"><i class="fas fa-crosshairs"></i> Detection Details</h2>
+                <button class="modal-close" aria-label="Close modal">&times;</button>
+            </div>
+            <div id="detection-details" style="padding:20px;">
+                <p style="color:var(--text-muted);">Select a camera to view live detections.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Camera Modal -->
+    <div class="modal" id="fullscreen-modal" role="dialog" aria-modal="true" aria-labelledby="fs-title">
+        <div class="fullscreen-modal-content glass-panel">
+
+            <div class="fs-header">
+                <div class="fs-header-left">
+                    <div class="fs-cam-icon"><i class="fas fa-broadcast-tower"></i></div>
+                    <div>
+                        <div class="fs-title" id="fs-title">Camera</div>
+                        <div class="fs-subtitle" id="fs-subtitle">Live Feed</div>
+                    </div>
+                    <span class="fs-live-badge"><i class="fas fa-circle"></i> LIVE</span>
+                </div>
+                <div class="fs-header-right">
+                    <div class="fs-badges" id="fs-badges"></div>
+                    <button class="fs-close-btn" id="fs-close" aria-label="Close fullscreen">
+                        <i class="fas fa-compress-alt"></i> Exit Fullscreen
+                    </button>
+                </div>
+            </div>
+
+            <div class="fs-body">
+                <div class="fs-stream-wrap">
+                    <img id="stream-fullscreen" class="fs-stream" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Fullscreen camera feed">
+                    <div class="fs-stream-placeholder" id="fs-placeholder">
+                        <i class="fas fa-broadcast-tower"></i>
+                        <span>Connecting to stream…</span>
+                    </div>
+                    <div class="fs-hint">Press <kbd>F</kbd> or <kbd>Esc</kbd> to exit</div>
+                </div>
+
+                <div class="fs-sidebar">
+                    <div class="fs-sidebar-section">
+                        <h3 class="fs-section-title"><i class="fas fa-crosshairs"></i> Live Detections</h3>
+                        <div id="fs-detections">
+                            <p class="fs-no-det"><i class="fas fa-check-circle"></i> No active detections</p>
+                        </div>
+                    </div>
+                    <div class="fs-sidebar-section">
+                        <h3 class="fs-section-title"><i class="fas fa-info-circle"></i> Camera Info</h3>
+                        <div class="fs-info-grid" id="fs-info-grid">
+                            <span class="fs-info-label">Camera ID</span><span class="fs-info-val" id="fs-cam-id">—</span>
+                            <span class="fs-info-label">Type</span><span class="fs-info-val" id="fs-cam-type">—</span>
+                            <span class="fs-info-label">Status</span><span class="fs-info-val" id="fs-cam-status">—</span>
+                            <span class="fs-info-label">Location</span><span class="fs-info-val" id="fs-cam-location">—</span>
+                        </div>
+                    </div>
+                    <div class="fs-sidebar-section">
+                        <h3 class="fs-section-title"><i class="fas fa-keyboard"></i> Shortcuts</h3>
+                        <div class="fs-shortcuts">
+                            <div class="fs-shortcut-row"><kbd>F</kbd><span>Toggle fullscreen</span></div>
+                            <div class="fs-shortcut-row"><kbd>Esc</kbd><span>Exit fullscreen</span></div>
+                            <div class="fs-shortcut-row"><kbd>←</kbd> <kbd>→</kbd><span>Switch camera</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="fs-footer" id="fs-footer"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
