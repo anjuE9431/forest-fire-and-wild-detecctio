@@ -1,0 +1,340 @@
+"""
+Heatmap Visualization for Detection Analysis
+Shows where detections occur most frequently
+"""
+
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from pathlib import Path
+from datetime import datetime, timedelta
+import json
+from collections import defaultdict
+
+
+class HeatmapGenerator:
+    """Generate heatmaps for detection analysis"""
+
+    def __init__(self, log_file='logs/detection_history.csv', output_dir='static/images/analytics'):
+        self.log_file = log_file
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_data(self, days=7):
+        """Load detection data from last N days"""
+        if not Path(self.log_file).exists():
+            return pd.DataFrame()
+
+        df = pd.read_csv(self.log_file)
+
+        # Filter by date
+        if 'Date' in df.columns:
+            cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            df = df[df['Date'] >= cutoff_date]
+
+        return df
+
+    def create_location_heatmap(self, days=7):
+        """Create heatmap showing detections by location and type"""
+        df = self.load_data(days)
+
+        if df.empty:
+            return self._create_empty_plot("No data available")
+
+        # Count detections by location and type
+        heatmap_data = df.groupby(['Location', 'Detection_Type']).size().unstack(fill_value=0)
+
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        sns.heatmap(
+            heatmap_data,
+            annot=True,
+            fmt='d',
+            cmap='YlOrRd',
+            cbar_kws={'label': 'Detection Count'},
+            linewidths=0.5
+        )
+
+        plt.title(f'Detection Heatmap by Location (Last {days} Days)', fontsize=14, fontweight='bold')
+        plt.xlabel('Detection Type', fontsize=12)
+        plt.ylabel('Location', fontsize=12)
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'location_heatmap.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_time_heatmap(self, days=7):
+        """Create heatmap showing detections by hour and day of week"""
+        df = self.load_data(days)
+
+        if df.empty or 'Timestamp' not in df.columns:
+            return self._create_empty_plot("No timestamp data")
+
+        # Parse timestamp
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        df['Hour'] = df['Timestamp'].dt.hour
+        df['DayOfWeek'] = df['Timestamp'].dt.day_name()
+
+        # Create pivot table
+        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        heatmap_data = df.groupby(['DayOfWeek', 'Hour']).size().unstack(fill_value=0)
+        heatmap_data = heatmap_data.reindex(day_order)
+
+        # Create figure
+        plt.figure(figsize=(14, 6))
+        sns.heatmap(
+            heatmap_data,
+            annot=True,
+            fmt='g',
+            cmap='RdYlGn_r',
+            cbar_kws={'label': 'Detection Count'},
+            linewidths=0.5
+        )
+
+        plt.title(f'Detection Pattern by Day and Hour (Last {days} Days)', fontsize=14, fontweight='bold')
+        plt.xlabel('Hour of Day', fontsize=12)
+        plt.ylabel('Day of Week', fontsize=12)
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'time_heatmap.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_class_distribution(self, days=7):
+        """Create bar chart showing detection counts by class"""
+        df = self.load_data(days)
+
+        if df.empty:
+            return self._create_empty_plot("No data available")
+
+        # Count by class and type
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Fire detections
+        fire_data = df[df['Detection_Type'] == 'fire']['Class_Name'].value_counts()
+        if not fire_data.empty:
+            fire_data.plot(kind='bar', ax=ax1, color='orangered')
+            ax1.set_title('Fire/Smoke Detections', fontsize=12, fontweight='bold')
+            ax1.set_xlabel('Class', fontsize=10)
+            ax1.set_ylabel('Count', fontsize=10)
+            ax1.tick_params(axis='x', rotation=45)
+
+        # Animal detections
+        animal_data = df[df['Detection_Type'] == 'animal']['Class_Name'].value_counts()
+        if not animal_data.empty:
+            animal_data.plot(kind='bar', ax=ax2, color='forestgreen')
+            ax2.set_title('Animal Detections', fontsize=12, fontweight='bold')
+            ax2.set_xlabel('Class', fontsize=10)
+            ax2.set_ylabel('Count', fontsize=10)
+            ax2.tick_params(axis='x', rotation=45)
+
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'class_distribution.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_confidence_distribution(self, days=7):
+        """Create histogram showing confidence distribution"""
+        df = self.load_data(days)
+
+        if df.empty or 'Confidence' not in df.columns:
+            return self._create_empty_plot("No confidence data")
+
+        # Create figure
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+        # Fire confidence
+        fire_conf = df[df['Detection_Type'] == 'fire']['Confidence']
+        if not fire_conf.empty:
+            ax1.hist(fire_conf, bins=20, color='orangered', alpha=0.7, edgecolor='black')
+            ax1.axvline(fire_conf.mean(), color='red', linestyle='--', linewidth=2,
+                       label=f'Mean: {fire_conf.mean():.2f}')
+            ax1.set_title('Fire Detection Confidence Distribution', fontsize=12, fontweight='bold')
+            ax1.set_xlabel('Confidence', fontsize=10)
+            ax1.set_ylabel('Frequency', fontsize=10)
+            ax1.legend()
+            ax1.grid(alpha=0.3)
+
+        # Animal confidence
+        animal_conf = df[df['Detection_Type'] == 'animal']['Confidence']
+        if not animal_conf.empty:
+            ax2.hist(animal_conf, bins=20, color='forestgreen', alpha=0.7, edgecolor='black')
+            ax2.axvline(animal_conf.mean(), color='darkgreen', linestyle='--', linewidth=2,
+                       label=f'Mean: {animal_conf.mean():.2f}')
+            ax2.set_title('Animal Detection Confidence Distribution', fontsize=12, fontweight='bold')
+            ax2.set_xlabel('Confidence', fontsize=10)
+            ax2.set_ylabel('Frequency', fontsize=10)
+            ax2.legend()
+            ax2.grid(alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'confidence_distribution.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_trend_chart(self, days=30):
+        """Create line chart showing detection trends over time"""
+        df = self.load_data(days)
+
+        if df.empty or 'Date' not in df.columns:
+            return self._create_empty_plot("No date data")
+
+        # Group by date and type
+        daily_counts = df.groupby(['Date', 'Detection_Type']).size().unstack(fill_value=0)
+
+        # Create figure
+        plt.figure(figsize=(14, 6))
+
+        if 'fire' in daily_counts.columns:
+            plt.plot(daily_counts.index, daily_counts['fire'],
+                    marker='o', color='orangered', linewidth=2, label='Fire/Smoke')
+
+        if 'animal' in daily_counts.columns:
+            plt.plot(daily_counts.index, daily_counts['animal'],
+                    marker='s', color='forestgreen', linewidth=2, label='Animals')
+
+        plt.title(f'Detection Trends (Last {days} Days)', fontsize=14, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Detection Count', fontsize=12)
+        plt.legend(fontsize=10)
+        plt.grid(alpha=0.3)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'trend_chart.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_camera_comparison(self, days=7):
+        """Create bar chart comparing detections across cameras"""
+        df = self.load_data(days)
+
+        if df.empty or 'Camera_ID' not in df.columns:
+            return self._create_empty_plot("No camera data")
+
+        # Count by camera
+        camera_counts = df.groupby(['Camera_ID', 'Detection_Type']).size().unstack(fill_value=0)
+
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        camera_counts.plot(kind='bar', stacked=False, color=['orangered', 'forestgreen'])
+
+        plt.title(f'Detections by Camera (Last {days} Days)', fontsize=14, fontweight='bold')
+        plt.xlabel('Camera ID', fontsize=12)
+        plt.ylabel('Detection Count', fontsize=12)
+        plt.legend(title='Detection Type', labels=['Fire/Smoke', 'Animals'])
+        plt.xticks(rotation=45)
+        plt.grid(axis='y', alpha=0.3)
+        plt.tight_layout()
+
+        # Save
+        output_path = self.output_dir / 'camera_comparison.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def create_all_heatmaps(self, days=7):
+        """Generate all heatmaps and return their paths"""
+        results = {
+            'location_heatmap': self.create_location_heatmap(days),
+            'time_heatmap': self.create_time_heatmap(days),
+            'class_distribution': self.create_class_distribution(days),
+            'confidence_distribution': self.create_confidence_distribution(days),
+            'trend_chart': self.create_trend_chart(days),
+            'camera_comparison': self.create_camera_comparison(days)
+        }
+
+        return results
+
+    def get_statistics(self, days=7):
+        """Get statistical summary of detections"""
+        df = self.load_data(days)
+
+        if df.empty:
+            return {
+                'total_detections': 0,
+                'fire_detections': 0,
+                'animal_detections': 0,
+                'average_confidence': 0,
+                'most_active_location': 'N/A',
+                'most_detected_class': 'N/A'
+            }
+
+        stats = {
+            'total_detections': len(df),
+            'fire_detections': len(df[df['Detection_Type'] == 'fire']),
+            'animal_detections': len(df[df['Detection_Type'] == 'animal']),
+            'average_confidence': df['Confidence'].mean() if 'Confidence' in df.columns else 0,
+            'most_active_location': df['Location'].mode()[0] if 'Location' in df.columns else 'N/A',
+            'most_detected_class': df['Class_Name'].mode()[0] if 'Class_Name' in df.columns else 'N/A',
+            'by_camera': df.groupby('Camera_ID').size().to_dict() if 'Camera_ID' in df.columns else {},
+            'by_date': df.groupby('Date').size().to_dict() if 'Date' in df.columns else {},
+        }
+
+        return stats
+
+    def _create_empty_plot(self, message):
+        """Create empty plot with message"""
+        plt.figure(figsize=(10, 6))
+        plt.text(0.5, 0.5, message, ha='center', va='center', fontsize=16, color='gray')
+        plt.axis('off')
+
+        output_path = self.output_dir / 'empty_plot.png'
+        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close()
+
+        return str(output_path)
+
+    def identify_hotspots(self, days=7, threshold=5):
+        """Identify detection hotspots"""
+        df = self.load_data(days)
+
+        if df.empty:
+            return []
+
+        # Find locations with detections above threshold
+        location_counts = df.groupby('Location').size()
+        hotspots = location_counts[location_counts >= threshold]
+
+        return [
+            {
+                'location': loc,
+                'count': int(count),
+                'severity': 'high' if count > threshold * 2 else 'medium'
+            }
+            for loc, count in hotspots.items()
+        ]
+
+
+# Singleton instance
+_heatmap_generator = None
+
+
+def get_heatmap_generator():
+    """Get singleton heatmap generator instance"""
+    global _heatmap_generator
+    if _heatmap_generator is None:
+        _heatmap_generator = HeatmapGenerator()
+    return _heatmap_generator
