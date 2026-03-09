@@ -1,0 +1,388 @@
+"""
+Multi-User Authentication and Role Management
+Provides user authentication, role-based access control, and session management
+"""
+
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List, Dict
+
+
+class User(UserMixin):
+    """User model for authentication"""
+
+    def __init__(self, user_id: str, username: str, email: str, password_hash: str,
+                 role: str, permissions: List[str], created_at: str):
+        self.id = user_id
+        self.username = username
+        self.email = email
+        self.password_hash = password_hash
+        self.role = role
+        self.permissions = permissions
+        self.created_at = created_at
+
+    def check_password(self, password: str) -> bool:
+        """Verify password"""
+        return check_password_hash(self.password_hash, password)
+
+    def has_permission(self, permission: str) -> bool:
+        """Check if user has specific permission"""
+        return permission in self.permissions or 'admin' in self.permissions
+
+    def to_dict(self) -> Dict:
+        """Convert user to dictionary (exclude password)"""
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'role': self.role,
+            'permissions': self.permissions,
+            'created_at': self.created_at
+        }
+
+
+class UserManager:
+    """Manage users and authentication"""
+
+    # Role definitions
+    ROLES = {
+        'admin': {
+            'permissions': [
+                'admin',  # Full access
+                'view_cameras',
+                'control_cameras',
+                'view_analytics',
+                'manage_alerts',
+                'manage_users',
+                'configure_system',
+                'view_logs',
+                'export_data'
+            ],
+            'description': 'Full system access'
+        },
+        'operator': {
+            'permissions': [
+                'view_cameras',
+                'control_cameras',
+                'view_analytics',
+                'manage_alerts',
+                'view_logs'
+            ],
+            'description': 'Operate cameras and manage alerts'
+        },
+        'viewer': {
+            'permissions': [
+                'view_cameras',
+                'view_analytics'
+            ],
+            'description': 'View-only access'
+        },
+        'analyst': {
+            'permissions': [
+                'view_cameras',
+                'view_analytics',
+                'export_data',
+                'view_logs'
+            ],
+            'description': 'Analytics and reporting'
+        }
+    }
+
+    def __init__(self, users_file='config/users.json'):
+        self.users_file = Path(users_file)
+        self.users_file.parent.mkdir(parents=True, exist_ok=True)
+        self.users = {}
+        self._load_users()
+        self._ensure_default_admin()
+
+    def _load_users(self):
+        """Load users from file"""
+        if self.users_file.exists():
+            try:
+                with open(self.users_file, 'r') as f:
+                    data = json.load(f)
+                    for user_data in data:
+                        # Convert 'id' to 'user_id' for User constructor
+                        if 'id' in user_data and 'user_id' not in user_data:
+                            user_data['user_id'] = user_data.pop('id')
+                        user = User(**user_data)
+                        self.users[user.id] = user
+            except Exception as e:
+                print(f"[!] Error loading users: {e}")
+
+    def _save_users(self):
+        """Save users to file"""
+        try:
+            data = []
+            for user in self.users.values():
+                user_dict = user.to_dict()
+                user_dict['password_hash'] = user.password_hash
+                data.append(user_dict)
+
+            with open(self.users_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[!] Error saving users: {e}")
+
+    def _ensure_default_admin(self):
+        """Create default admin user if none exists"""
+        if not self.users:
+            admin = self.create_user(
+                username='admin',
+                email='admin@forestmonitoring.local',
+                password='admin123',  # CHANGE THIS IN PRODUCTION!
+                role='admin'
+            )
+            print("[!] Default admin user created")
+            print("    Username: admin")
+            print("    Password: admin123")
+            print("    [!] CHANGE PASSWORD IMMEDIATELY!")
+
+    def create_user(self, username: str, email: str, password: str, role: str) -> Optional[User]:
+        """
+        Create new user
+
+        Args:
+            username: Unique username
+            email: User email
+            password: Plain text password (will be hashed)
+            role: User role (admin, operator, viewer, analyst)
+
+        Returns:
+            User object or None if creation fails
+        """
+        # Validate role
+        if role not in self.ROLES:
+            print(f"[X] Invalid role: {role}")
+            return None
+
+        # Check if username exists
+        if self.get_user_by_username(username):
+            print(f"[X] Username already exists: {username}")
+            return None
+
+        # Check if email exists
+        if self.get_user_by_email(email):
+            print(f"[X] Email already exists: {email}")
+            return None
+
+        # Generate user ID
+        user_id = f"user_{len(self.users) + 1}_{int(datetime.now().timestamp())}"
+
+        # Create user
+        user = User(
+            user_id=user_id,
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password),
+            role=role,
+            permissions=self.ROLES[role]['permissions'].copy(),
+            created_at=datetime.now().isoformat()
+        )
+
+        self.users[user_id] = user
+        self._save_users()
+
+        print(f"[OK] User created: {username} ({role})")
+        return user
+
+    def get_user(self, user_id: str) -> Optional[User]:
+        """Get user by ID"""
+        return self.users.get(user_id)
+
+    def get_user_by_username(self, username: str) -> Optional[User]:
+        """Get user by username"""
+        for user in self.users.values():
+            if user.username == username:
+                return user
+        return None
+
+    def get_user_by_email(self, email: str) -> Optional[User]:
+        """Get user by email"""
+        for user in self.users.values():
+            if user.email == email:
+                return user
+        return None
+
+    def authenticate(self, username: str, password: str) -> Optional[User]:
+        """
+        Authenticate user
+
+        Args:
+            username: Username or email
+            password: Plain text password
+
+        Returns:
+            User object if authentication successful, None otherwise
+        """
+        # Try username
+        user = self.get_user_by_username(username)
+
+        # Try email if not found
+        if not user:
+            user = self.get_user_by_email(username)
+
+        # Verify password
+        if user and user.check_password(password):
+            return user
+
+        return None
+
+    def update_password(self, user_id: str, new_password: str) -> bool:
+        """Update user password"""
+        user = self.get_user(user_id)
+        if user:
+            user.password_hash = generate_password_hash(new_password)
+            self._save_users()
+            return True
+        return False
+
+    def delete_user(self, user_id: str) -> bool:
+        """Delete user"""
+        if user_id in self.users:
+            user = self.users[user_id]
+            # Prevent deleting the last admin
+            if user.role == 'admin':
+                admin_count = sum(1 for u in self.users.values() if u.role == 'admin')
+                if admin_count <= 1:
+                    print("[X] Cannot delete the last admin user")
+                    return False
+
+            del self.users[user_id]
+            self._save_users()
+            return True
+        return False
+
+    def update_role(self, user_id: str, new_role: str) -> bool:
+        """Update user role"""
+        if new_role not in self.ROLES:
+            return False
+
+        user = self.get_user(user_id)
+        if user:
+            user.role = new_role
+            user.permissions = self.ROLES[new_role]['permissions'].copy()
+            self._save_users()
+            return True
+        return False
+
+    def list_users(self) -> List[Dict]:
+        """Get list of all users (without passwords)"""
+        return [user.to_dict() for user in self.users.values()]
+
+    def get_role_info(self, role: str) -> Optional[Dict]:
+        """Get role information"""
+        return self.ROLES.get(role)
+
+    def list_roles(self) -> Dict:
+        """Get all available roles"""
+        return self.ROLES
+
+
+class SessionManager:
+    """Manage user sessions and activity tracking"""
+
+    def __init__(self, sessions_file='config/sessions.json'):
+        self.sessions_file = Path(sessions_file)
+        self.sessions_file.parent.mkdir(parents=True, exist_ok=True)
+        self.active_sessions = {}  # user_id -> session_data
+        self.activity_log = []
+        self._load_sessions()
+
+    def _load_sessions(self):
+        """Load session data"""
+        if self.sessions_file.exists():
+            try:
+                with open(self.sessions_file, 'r') as f:
+                    data = json.load(f)
+                    self.active_sessions = data.get('active_sessions', {})
+                    self.activity_log = data.get('activity_log', [])
+            except Exception as e:
+                print(f"[!] Error loading sessions: {e}")
+
+    def _save_sessions(self):
+        """Save session data"""
+        try:
+            data = {
+                'active_sessions': self.active_sessions,
+                'activity_log': self.activity_log[-1000:]  # Keep last 1000 entries
+            }
+            with open(self.sessions_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[!] Error saving sessions: {e}")
+
+    def start_session(self, user: User, ip_address: str):
+        """Start user session"""
+        session_data = {
+            'user_id': user.id,
+            'username': user.username,
+            'role': user.role,
+            'login_time': datetime.now().isoformat(),
+            'ip_address': ip_address,
+            'last_activity': datetime.now().isoformat()
+        }
+        self.active_sessions[user.id] = session_data
+
+        # Log activity
+        self.log_activity(user.id, 'login', {'ip': ip_address})
+
+        self._save_sessions()
+
+    def end_session(self, user_id: str):
+        """End user session"""
+        if user_id in self.active_sessions:
+            self.log_activity(user_id, 'logout', {})
+            del self.active_sessions[user_id]
+            self._save_sessions()
+
+    def update_activity(self, user_id: str):
+        """Update last activity timestamp"""
+        if user_id in self.active_sessions:
+            self.active_sessions[user_id]['last_activity'] = datetime.now().isoformat()
+            self._save_sessions()
+
+    def log_activity(self, user_id: str, action: str, details: Dict):
+        """Log user activity"""
+        log_entry = {
+            'user_id': user_id,
+            'action': action,
+            'details': details,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.activity_log.append(log_entry)
+        self._save_sessions()
+
+    def get_active_sessions(self) -> List[Dict]:
+        """Get list of active sessions"""
+        return list(self.active_sessions.values())
+
+    def get_user_activity(self, user_id: str, limit: int = 50) -> List[Dict]:
+        """Get activity log for specific user"""
+        user_activities = [log for log in self.activity_log if log['user_id'] == user_id]
+        return user_activities[-limit:]
+
+
+# Singleton instances
+_user_manager = None
+_session_manager = None
+
+
+def get_user_manager() -> UserManager:
+    """Get singleton user manager"""
+    global _user_manager
+    if _user_manager is None:
+        _user_manager = UserManager()
+    return _user_manager
+
+
+def get_session_manager() -> SessionManager:
+    """Get singleton session manager"""
+    global _session_manager
+    if _session_manager is None:
+        _session_manager = SessionManager()
+    return _session_manager
+uuuuuuu
