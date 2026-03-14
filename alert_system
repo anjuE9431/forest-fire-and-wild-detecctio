@@ -1,0 +1,354 @@
+"""
+Alert System for Forest Fire and Animal Detection
+Sends email alerts when threats are detected.
+
+Deduplication strategy
+----------------------
+Each unique (location, detection_type[, animal_class]) combination is
+tracked as an *incident*.  An incident goes through three lifecycle phases:
+
+  OPEN         â†’ initial alert sent
+  STILL_ACTIVE â†’ follow-up email every STILL_ACTIVE_INTERVAL seconds
+  RESOLVED     â†’ threat absent for RESOLVED_GAP seconds â†’ resolution email
+
+This prevents 120 emails for a 10-minute continuous fire while still
+keeping responders informed with periodic follow-ups.
+"""
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+import threading
+import time
+from typing import List, Dict
+import yaml
+import os
+from datetime import datetime
+import cv2
+import numpy as np
+from pathlib import Path
+from dataclasses import dataclass, field
+
+
+# â”€â”€ Incident data class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@dataclass
+class Incident:
+    """Tracks the lifecycle of a single detected threat."""
+    key: str
+    alert_type: str       # 'fire' or 'animal'
+    class_name: str       # 'fire', 'smoke', 'tiger', etc.
+    location: str
+    first_detected: float = field(default_factory=time.time)
+    last_detected: float  = field(default_factory=time.time)
+    last_alert_sent: float = field(default_factory=time.time)
+    follow_up_count: int  = 0
+    resolved: bool        = False
+
+
+# â”€â”€ AlertManager â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class AlertManager:
+    """
+    Manages alert notifications with full deduplication and incident lifecycle.
+
+    Timeline for a continuous fire detection
+    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    t=0      first frame with fire â†’ INITIAL email
+    t=300    still burning          â†’ STILL ACTIVE #1 email
+    t=600    still burning          â†’ STILL ACTIVE #2 email
+    t=660    fire gone              â†’ (resolver sees 60 s absence)
+    t=720    resolved               â†’ RESOLVED email
+    """
+
+    STILL_ACTIVE_INTERVAL = 300   # follow-up every 5 minutes
+    RESOLVED_GAP          = 60    # declare resolved after 60 s of no detection
+    MAX_FOLLOW_UPS        = 20    # safety cap
+
+    def __init__(self, config_path: str = 'config.yaml'):
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+
+        self.alert_config    = self.config['alerts']
+        self.enabled         = self.alert_config['enabled']
+        self.email_config    = self.alert_config['email']
+        self.sender_email    = os.getenv('EMAIL_SENDER',   self.email_config.get('sender_email', ''))
+        self.sender_password = os.getenv('EMAIL_PASSWORD', '')
+        self.receiver_emails = os.getenv('EMAIL_RECEIVERS', '').split(',')
+        if not self.receiver_emails or self.receiver_emails == ['']:
+            self.receiver_emails = self.email_config.get('receiver_emails', [])
+
+        self._incidents: Dict[str, Incident] = {}
+        self._lock = threading.Lock()
+
+        # Queue of alert dicts waiting to be persisted to the DB.
+        # The inference loop (which owns the Flask app context) drains this
+        # every cycle and writes Alert rows. Using a plain list protected by
+        # _lock avoids any dependency on Flask/SQLAlchemy from this module.
+        self._pending_db_saves: List[dict] = []
+
+        self.storage_path = Path(self.config['camera']['detection_storage'])
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+
+        # Background resolver thread
+        threading.Thread(target=self._resolver_loop, daemon=True).start()
+        print('[OK] AlertManager initialized (dedup + still-active pattern)')
+
+    def drain_pending_saves(self) -> List[dict]:
+        """Return (and clear) all alert records that need to be written to DB.
+
+        Called by the inference loop every cycle:
+            pending = alert_manager.drain_pending_saves()
+            # â€¦ write each dict as an Alert row inside app.app_context()
+        """
+        with self._lock:
+            pending = list(self._pending_db_saves)
+            self._pending_db_saves.clear()
+        return pending
+
+    # â”€â”€ Public interface â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def fire_alert(self, detections: List, frame: np.ndarray,
+                   location: str = 'Unknown') -> bool:
+        if not self.enabled or not detections:
+            return False
+        class_name = 'fire' if any(d.class_name == 'fire' for d in detections) else 'smoke'
+        key = f'fire:{location}'
+        return self._handle_detection(key, 'fire', class_name, location, detections, frame)
+
+    def animal_alert(self, detections: List, frame: np.ndarray,
+                     location: str = 'Unknown') -> bool:
+        if not self.enabled or not detections:
+            return False
+        sent_any = False
+        species_groups: Dict[str, list] = {}
+        for d in detections:
+            species_groups.setdefault(d.class_name, []).append(d)
+        for species, dets in species_groups.items():
+            key = f'animal:{species}:{location}'
+            if self._handle_detection(key, 'animal', species, location, dets, frame):
+                sent_any = True
+        return sent_any
+
+    def update_email_config(self, config: dict):
+        if config.get('enabled'):
+            self.email_config['enabled']     = True
+            self.email_config['smtp_server'] = config.get('smtp_server', 'smtp.gmail.com')
+            self.email_config['smtp_port']   = config.get('smtp_port', 587)
+            self.sender_email                = config.get('sender_email', '')
+            if config.get('sender_password'):
+                self.sender_password         = config['sender_password']
+            self.receiver_emails             = config.get('recipients', [])
+        else:
+            self.email_config['enabled'] = False
+
+    def send_test_email(self, frame: np.ndarray) -> bool:
+        subject = 'Test Alert â€” Forest Monitoring System'
+        body = self._html_wrap(
+            'Test Alert',
+            f'<p>Alert configuration verified.</p>'
+            f'<p><strong>Time:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>'
+        )
+        image_path = self._save_image(frame, 'test', 'test_alert')
+        return self._send_email(subject, body, image_path)
+
+    # â”€â”€ Core deduplication logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _handle_detection(self, key: str, alert_type: str, class_name: str,
+                          location: str, detections: list, frame: np.ndarray) -> bool:
+        now = time.time()
+        kind = None
+
+        with self._lock:
+            incident = self._incidents.get(key)
+
+            if incident is None or incident.resolved:
+                incident = Incident(
+                    key=key, alert_type=alert_type,
+                    class_name=class_name, location=location,
+                )
+                self._incidents[key] = incident
+                kind = 'initial'
+            else:
+                incident.last_detected = now
+                elapsed = now - incident.last_alert_sent
+                if elapsed < self.STILL_ACTIVE_INTERVAL:
+                    return False   # cooldown active â€” suppress
+                if incident.follow_up_count >= self.MAX_FOLLOW_UPS:
+                    return False   # safety cap
+                incident.follow_up_count += 1
+                incident.last_alert_sent = now
+                kind = 'still_active'
+
+            # Compute severity so the DB record is accurate
+            if alert_type == 'fire':
+                severity = 'CRITICAL' if any(d.class_name == 'fire' for d in detections) else 'HIGH'
+            else:
+                dangerous = {'tiger', 'leopard', 'bear', 'elephant'}
+                severity  = 'HIGH' if class_name in dangerous else 'MODERATE'
+
+            # Queue for DB persistence (drained by inference loop)
+            self._pending_db_saves.append({
+                'alert_type': alert_type,
+                'severity':   severity,
+                'location':   location,
+                'alert_kind': kind,
+                'message':    f'{class_name.upper()} detected at {location}',
+                'sent_at':    datetime.now(),
+            })
+
+        # Send email outside the lock
+        image_path = self._save_image(frame, alert_type, class_name)
+        if alert_type == 'fire':
+            return self._send_fire_email(incident, detections, image_path, kind)
+        else:
+            return self._send_animal_email(incident, detections, image_path, kind)
+
+    def _resolver_loop(self):
+        """Periodically check for incidents that have gone quiet."""
+        while True:
+            time.sleep(10)
+            now = time.time()
+            to_resolve = []
+            with self._lock:
+                for incident in self._incidents.values():
+                    if not incident.resolved and (now - incident.last_detected) >= self.RESOLVED_GAP:
+                        incident.resolved = True
+                        to_resolve.append(incident)
+                        # Queue a resolved record for DB
+                        self._pending_db_saves.append({
+                            'alert_type': incident.alert_type,
+                            'severity':   'LOW',
+                            'location':   incident.location,
+                            'alert_kind': 'resolved',
+                            'message':    f'{incident.class_name.upper()} resolved at {incident.location}',
+                            'sent_at':    datetime.now(),
+                        })
+            for incident in to_resolve:
+                self._send_resolved_email(incident)
+
+    # â”€â”€ Email builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _send_fire_email(self, incident: Incident, detections: list,
+                         image_path: str, kind: str) -> bool:
+        has_fire  = any(d.class_name == 'fire'  for d in detections)
+        has_smoke = any(d.class_name == 'smoke' for d in detections)
+        threat    = ('FIRE AND SMOKE' if (has_fire and has_smoke)
+                     else ('FIRE' if has_fire else 'SMOKE'))
+        severity  = 'CRITICAL' if has_fire else 'HIGH'
+        prefix    = {'initial': 'ALERT', 'still_active': 'STILL ACTIVE'}.get(kind, 'UPDATE')
+        subject   = f'[{prefix}] {threat} DETECTED â€” {incident.location}'
+
+        det_rows     = ''.join(f'<li>{d.class_name.upper()} â€” {d.confidence:.2%}</li>' for d in detections)
+        follow_note  = (f'<p><em>Follow-up #{incident.follow_up_count} â€” active for {self._duration_str(incident)}.</em></p>'
+                        if kind == 'still_active' else '')
+
+        body = self._html_wrap(
+            f'Forest Fire Alert â€” {severity}',
+            f'<p><strong>Severity:</strong> <span style="color:#d9534f">{severity}</span></p>'
+            f'<p><strong>Threat:</strong> {threat}</p>'
+            f'<p><strong>Location:</strong> {incident.location}</p>'
+            f'<p><strong>First detected:</strong> {datetime.fromtimestamp(incident.first_detected).strftime("%Y-%m-%d %H:%M:%S")}</p>'
+            f'<p><strong>Report time:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>'
+            f'<ul>{det_rows}</ul>'
+            f'{follow_note}'
+            f'<p style="color:#d9534f;font-weight:bold">IMMEDIATE ACTION REQUIRED â€” dispatch fire response team.</p>'
+        )
+        return self._send_email(subject, body, image_path)
+
+    def _send_animal_email(self, incident: Incident, detections: list,
+                           image_path: str, kind: str) -> bool:
+        dangerous    = {'tiger', 'leopard', 'bear', 'elephant'}
+        threat_level = 'HIGH' if incident.class_name in dangerous else 'MODERATE'
+        count        = len(detections)
+        avg_conf     = sum(d.confidence for d in detections) / count
+        prefix       = {'initial': 'ALERT', 'still_active': 'STILL ACTIVE'}.get(kind, 'UPDATE')
+        subject      = f'[{prefix}] {incident.class_name.upper()} â€” {incident.location}'
+
+        follow_note  = (f'<p><em>Follow-up #{incident.follow_up_count} â€” present for {self._duration_str(incident)}.</em></p>'
+                        if kind == 'still_active' else '')
+        caution = (
+            '<p style="color:#d9534f;font-weight:bold">POTENTIALLY DANGEROUS ANIMAL</p>'
+            '<ul><li>Alert nearby personnel</li><li>Warn residents/tourists</li>'
+            '<li>Prepare wildlife management team</li></ul>'
+            if threat_level == 'HIGH' else
+            '<p>Wildlife detected in forest area â€” monitor situation.</p>'
+        )
+
+        body = self._html_wrap(
+            f'Wildlife Alert â€” {threat_level}',
+            f'<p><strong>Species:</strong> {incident.class_name.upper()}</p>'
+            f'<p><strong>Count:</strong> {count}</p>'
+            f'<p><strong>Avg. confidence:</strong> {avg_conf:.2%}</p>'
+            f'<p><strong>Location:</strong> {incident.location}</p>'
+            f'<p><strong>First detected:</strong> {datetime.fromtimestamp(incident.first_detected).strftime("%Y-%m-%d %H:%M:%S")}</p>'
+            f'{follow_note}'
+            f'{caution}'
+        )
+        return self._send_email(subject, body, image_path)
+
+    def _send_resolved_email(self, incident: Incident) -> bool:
+        label   = incident.class_name.upper()
+        subject = f'[RESOLVED] {label} no longer detected â€” {incident.location}'
+        body    = self._html_wrap(
+            'Alert Resolved',
+            f'<p>The <strong>{label}</strong> detection at <strong>{incident.location}</strong> is no longer active.</p>'
+            f'<p><strong>Active duration:</strong> {self._duration_str(incident)}</p>'
+            f'<p><strong>Follow-up emails sent:</strong> {incident.follow_up_count}</p>'
+            f'<p><strong>Resolved at:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>'
+            f'<p style="color:#5cb85c">Situation has cleared. Continue monitoring.</p>'
+        )
+        print(f'[RESOLVED] {label} at {incident.location} after {self._duration_str(incident)}')
+        return self._send_email(subject, body)
+
+    # â”€â”€ Low-level helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    @staticmethod
+    def _html_wrap(title: str, *sections: str) -> str:
+        content = '\n'.join(sections)
+        return (f'<html><body style="font-family:Arial,sans-serif;max-width:600px">'
+                f'<h2>{title}</h2>{content}</body></html>')
+
+    @staticmethod
+    def _duration_str(incident: Incident) -> str:
+        secs = int(time.time() - incident.first_detected)
+        if secs < 60:   return f'{secs}s'
+        if secs < 3600: return f'{secs // 60}m {secs % 60}s'
+        return f'{secs // 3600}h {(secs % 3600) // 60}m'
+
+    def _save_image(self, frame: np.ndarray, detection_type: str, class_name: str) -> str:
+        ts       = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'{detection_type}_{class_name}_{ts}.jpg'
+        filepath = self.storage_path / filename
+        cv2.imwrite(str(filepath), frame)
+        return str(filepath)
+
+    def _send_email(self, subject: str, body: str, image_path: str = None) -> bool:
+        if not self.email_config.get('enabled', False):
+            return False
+        if not self.sender_email or not self.sender_password:
+            print('[!] Email credentials not configured')
+            return False
+        try:
+            msg            = MIMEMultipart()
+            msg['From']    = self.sender_email
+            msg['To']      = ', '.join(self.receiver_emails)
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'html'))
+            if image_path and os.path.exists(image_path):
+                with open(image_path, 'rb') as f:
+                    img = MIMEImage(f.read())
+                    img.add_header('Content-Disposition', 'attachment',
+                                   filename=os.path.basename(image_path))
+                    msg.attach(img)
+            server = smtplib.SMTP(self.email_config['smtp_server'], self.email_config['smtp_port'])
+            server.starttls()
+            server.login(self.sender_email, self.sender_password)
+            server.send_message(msg)
+            server.quit()
+            print(f'[OK] Email sent: {subject[:70]}')
+            return True
+        except Exception as e:
+            print(f'[X] Email failed: {e}')
+            return False
