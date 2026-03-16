@@ -1,0 +1,224 @@
+"""
+Detection Confidence Filter
+Allows dynamic adjustment of detection thresholds per camera and detection type
+"""
+
+import yaml
+from pathlib import Path
+import json
+
+
+class ConfidenceFilter:
+    """Manages confidence thresholds for detections"""
+
+    def __init__(self, config_path='config.yaml'):
+        self.config_path = config_path
+        self.custom_thresholds_file = 'config/custom_thresholds.json'
+
+        # Create config directory
+        Path('config').mkdir(exist_ok=True)
+
+        # Load default thresholds from config
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        self.default_thresholds = {
+            'fire': {
+                'fire': config['models']['fire_detection']['confidence_threshold'],
+                'smoke': config['models']['fire_detection']['confidence_threshold']
+            },
+            'animal': {
+                class_name: config['models']['animal_detection']['confidence_threshold']
+                for class_name in config['models']['animal_detection']['classes']
+            }
+        }
+
+        # Load custom thresholds
+        self.custom_thresholds = self._load_custom_thresholds()
+
+        # Camera-specific thresholds
+        self.camera_thresholds = {}
+
+        print("[OK] Confidence filter initialized")
+
+    def _load_custom_thresholds(self):
+        """Load custom thresholds from file"""
+        if Path(self.custom_thresholds_file).exists():
+            try:
+                with open(self.custom_thresholds_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[!] Error loading custom thresholds: {e}")
+                return {}
+        return {}
+
+    def _save_custom_thresholds(self):
+        """Save custom thresholds to file"""
+        try:
+            with open(self.custom_thresholds_file, 'w') as f:
+                json.dump(self.custom_thresholds, f, indent=2)
+            print("[OK] Custom thresholds saved")
+        except Exception as e:
+            print(f"[X] Error saving custom thresholds: {e}")
+
+    def get_threshold(self, detection_type, class_name, camera_id=None):
+        """
+        Get confidence threshold for specific detection
+
+        Args:
+            detection_type: 'fire' or 'animal'
+            class_name: Class name (e.g., 'fire', 'tiger')
+            camera_id: Optional camera ID for camera-specific threshold
+
+        Returns:
+            Confidence threshold (0.0 to 1.0)
+        """
+        # Check camera-specific threshold first
+        if camera_id and camera_id in self.camera_thresholds:
+            cam_threshold = self.camera_thresholds[camera_id].get(detection_type, {}).get(class_name)
+            if cam_threshold is not None:
+                return cam_threshold
+
+        # Check custom threshold
+        if detection_type in self.custom_thresholds:
+            custom = self.custom_thresholds[detection_type].get(class_name)
+            if custom is not None:
+                return custom
+
+        # Return default threshold
+        return self.default_thresholds.get(detection_type, {}).get(class_name, 0.5)
+
+    def set_threshold(self, detection_type, class_name, threshold, camera_id=None):
+        """
+        Set custom confidence threshold
+
+        Args:
+            detection_type: 'fire' or 'animal'
+            class_name: Class name
+            threshold: New threshold (0.0 to 1.0)
+            camera_id: Optional camera ID for camera-specific threshold
+        """
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("Threshold must be between 0.0 and 1.0")
+
+        if camera_id:
+            # Set camera-specific threshold
+            if camera_id not in self.camera_thresholds:
+                self.camera_thresholds[camera_id] = {}
+            if detection_type not in self.camera_thresholds[camera_id]:
+                self.camera_thresholds[camera_id][detection_type] = {}
+
+            self.camera_thresholds[camera_id][detection_type][class_name] = threshold
+            print(f"[Config] Camera {camera_id} - {detection_type}/{class_name}: {threshold}")
+        else:
+            # Set global custom threshold
+            if detection_type not in self.custom_thresholds:
+                self.custom_thresholds[detection_type] = {}
+
+            self.custom_thresholds[detection_type][class_name] = threshold
+            self._save_custom_thresholds()
+            print(f"[Config] Global - {detection_type}/{class_name}: {threshold}")
+
+    def reset_threshold(self, detection_type, class_name, camera_id=None):
+        """Reset threshold to default"""
+        if camera_id:
+            if camera_id in self.camera_thresholds:
+                if detection_type in self.camera_thresholds[camera_id]:
+                    self.camera_thresholds[camera_id][detection_type].pop(class_name, None)
+        else:
+            if detection_type in self.custom_thresholds:
+                self.custom_thresholds[detection_type].pop(class_name, None)
+                self._save_custom_thresholds()
+
+        print(f"[Config] Reset {detection_type}/{class_name} to default")
+
+    def reset_all(self):
+        """Reset all custom thresholds"""
+        self.custom_thresholds = {}
+        self.camera_thresholds = {}
+        self._save_custom_thresholds()
+        print("[Config] All thresholds reset to defaults")
+
+    def filter_detections(self, detections, detection_type, camera_id=None):
+        """
+        Filter detections based on confidence thresholds
+
+        Args:
+            detections: List of Detection objects
+            detection_type: 'fire' or 'animal'
+            camera_id: Optional camera ID
+
+        Returns:
+            Filtered list of detections
+        """
+        filtered = []
+
+        for det in detections:
+            threshold = self.get_threshold(detection_type, det.class_name, camera_id)
+
+            if det.confidence >= threshold:
+                filtered.append(det)
+            else:
+                print(f"[Filter] Rejected: {det.class_name} ({det.confidence:.2f} < {threshold:.2f})")
+
+        return filtered
+
+    def get_all_thresholds(self):
+        """Get all current thresholds"""
+        return {
+            'defaults': self.default_thresholds,
+            'custom': self.custom_thresholds,
+            'camera_specific': self.camera_thresholds
+        }
+
+    def get_statistics(self):
+        """Get filter statistics"""
+        stats = {
+            'default_fire_threshold': self.default_thresholds['fire']['fire'],
+            'default_animal_threshold': list(self.default_thresholds['animal'].values())[0] if self.default_thresholds['animal'] else 0.5,
+            'custom_count': sum(len(v) for v in self.custom_thresholds.values()),
+            'camera_specific_count': len(self.camera_thresholds),
+            'total_classes': len(self.default_thresholds['fire']) + len(self.default_thresholds['animal'])
+        }
+        return stats
+
+    def suggest_threshold(self, recent_detections, target_false_positive_rate=0.1):
+        """
+        Suggest optimal threshold based on recent detections
+
+        Args:
+            recent_detections: List of recent detections with labels
+            target_false_positive_rate: Desired false positive rate
+
+        Returns:
+            Suggested threshold
+        """
+        # This is a simple implementation
+        # In production, you'd use ROC curve analysis
+
+        if not recent_detections:
+            return 0.5
+
+        confidences = [d['confidence'] for d in recent_detections]
+        false_positives = [d for d in recent_detections if not d.get('verified', True)]
+
+        if not false_positives:
+            return min(confidences) if confidences else 0.5
+
+        # Simple approach: set threshold above X% of false positives
+        fp_confidences = [d['confidence'] for d in false_positives]
+        suggested = sorted(fp_confidences)[int(len(fp_confidences) * (1 - target_false_positive_rate))]
+
+        return min(max(suggested, 0.3), 0.9)  # Clamp between 0.3 and 0.9
+
+
+# Singleton instance
+_confidence_filter = None
+
+
+def get_confidence_filter():
+    """Get singleton confidence filter instance"""
+    global _confidence_filter
+    if _confidence_filter is None:
+        _confidence_filter = ConfidenceFilter()
+    return _confidence_filter
