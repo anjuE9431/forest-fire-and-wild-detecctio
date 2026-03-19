@@ -1,0 +1,370 @@
+"""
+Screenshot and Video Recording Manager
+Automatically captures images and records videos when detections occur
+"""
+
+import cv2
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+import threading
+import queue
+import numpy as np
+
+
+class ScreenshotManager:
+    """Manages automatic screenshot capture on detection"""
+
+    def __init__(self, storage_path='detections/screenshots'):
+        self.storage_path = Path(storage_path)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        print(f"[OK] Screenshot storage: {self.storage_path}")
+
+    def save_detection(self, frame, camera_id, detection_type, class_name, confidence):
+        """
+        Save screenshot with organized structure
+
+        Args:
+            frame: Image frame to save
+            camera_id: Camera identifier
+            detection_type: 'fire' or 'animal'
+            class_name: Detected class name
+            confidence: Detection confidence score
+
+        Returns:
+            Path to saved screenshot
+        """
+        try:
+            # Create folder structure: detections/screenshots/2026-01-08/fire/
+            date_folder = self.storage_path / datetime.now().strftime('%Y-%m-%d')
+            type_folder = date_folder / detection_type
+            type_folder.mkdir(parents=True, exist_ok=True)
+
+            # Generate filename with confidence
+            timestamp = datetime.now().strftime('%H-%M-%S')
+            conf_str = f"{int(confidence * 100)}"
+            filename = f"{camera_id}_{class_name}_{conf_str}pct_{timestamp}.jpg"
+            filepath = type_folder / filename
+
+            # Save image
+            cv2.imwrite(str(filepath), frame)
+            print(f"[Screenshot] Saved: {filename}")
+
+            return str(filepath)
+
+        except Exception as e:
+            print(f"[X] Screenshot save error: {e}")
+            return None
+
+    def get_today_screenshots(self, detection_type=None):
+        """
+        Get all screenshots from today
+
+        Args:
+            detection_type: Filter by 'fire' or 'animal', None for all
+
+        Returns:
+            List of screenshot information
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        today_folder = self.storage_path / today
+
+        if not today_folder.exists():
+            return []
+
+        screenshots = []
+
+        if detection_type:
+            type_folder = today_folder / detection_type
+            if type_folder.exists():
+                for img in sorted(type_folder.glob('*.jpg'), reverse=True):
+                    screenshots.append(self._parse_screenshot_info(img))
+        else:
+            for img in sorted(today_folder.rglob('*.jpg'), reverse=True):
+                screenshots.append(self._parse_screenshot_info(img))
+
+        return screenshots
+
+    def get_recent_screenshots(self, hours=24, limit=50):
+        """Get recent screenshots within specified hours"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        screenshots = []
+
+        for img in sorted(self.storage_path.rglob('*.jpg'), reverse=True):
+            img_time = datetime.fromtimestamp(img.stat().st_mtime)
+            if img_time >= cutoff_time:
+                screenshots.append(self._parse_screenshot_info(img))
+                if len(screenshots) >= limit:
+                    break
+
+        return screenshots
+
+    def _parse_screenshot_info(self, img_path):
+        """Parse screenshot filename to extract information.
+
+        Filename format: {camera_id}_{class_name}_{confidence_pct}_{timestamp}.jpg
+        e.g.  cam_1_fire_87pct_20240115_143022.jpg
+        """
+        parts = img_path.stem.split('_')
+        # Parse confidence: stored as e.g. "87pct" → convert to float 0.87
+        raw_conf = parts[2] if len(parts) > 2 else '0pct'
+        try:
+            confidence = float(raw_conf.replace('pct', '')) / 100.0
+        except (ValueError, AttributeError):
+            confidence = 0.0
+        return {
+            'path':      str(img_path.relative_to(self.storage_path)),
+            'full_path': str(img_path),
+            'filename':  img_path.name,
+            'camera_id': parts[0] if len(parts) > 0 else 'unknown',
+            'class_name': parts[1] if len(parts) > 1 else 'unknown',
+            'confidence': confidence,
+            'timestamp': parts[3] if len(parts) > 3 else '',
+            'type':      img_path.parent.name,
+            'date':      img_path.parent.parent.name,
+            'size':      img_path.stat().st_size,
+            'created':   datetime.fromtimestamp(img_path.stat().st_ctime).isoformat()
+        }
+
+    def cleanup_old_screenshots(self, days=7):
+        """Delete screenshots older than specified days"""
+        cutoff_date = datetime.now() - timedelta(days=days)
+        deleted = 0
+
+        for img in self.storage_path.rglob('*.jpg'):
+            img_time = datetime.fromtimestamp(img.stat().st_mtime)
+            if img_time < cutoff_date:
+                img.unlink()
+                deleted += 1
+
+        print(f"[Cleanup] Deleted {deleted} old screenshots")
+        return deleted
+
+
+class VideoRecorder:
+    """Records video clips when detections occur"""
+
+    def __init__(self, storage_path='detections/videos', buffer_seconds=10):
+        self.storage_path = Path(storage_path)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.buffer_seconds = buffer_seconds
+        self.fps = 10  # Recording FPS
+
+        # Frame buffer (stores last N seconds)
+        self.frame_buffer = queue.Queue(maxsize=buffer_seconds * self.fps)
+        self.is_recording = False
+        self.current_writer = None
+        self.recording_thread = None
+
+        print(f"[OK] Video storage: {self.storage_path}")
+
+    def add_frame_to_buffer(self, frame):
+        """Add frame to circular buffer"""
+        if self.frame_buffer.full():
+            try:
+                self.frame_buffer.get_nowait()  # Remove oldest frame
+            except queue.Empty:
+                pass
+
+        try:
+            self.frame_buffer.put_nowait(frame.copy())
+        except queue.Full:
+            pass
+
+    def start_recording(self, camera_id, detection_type, class_name, duration=30):
+        """
+        Start recording video clip
+
+        Args:
+            camera_id: Camera identifier
+            detection_type: 'fire' or 'animal'
+            class_name: Detected class name
+            duration: Recording duration in seconds
+        """
+        if self.is_recording:
+            return None  # Already recording
+
+        self.is_recording = True
+
+        # Create folder structure
+        date_folder = self.storage_path / datetime.now().strftime('%Y-%m-%d')
+        type_folder = date_folder / detection_type
+        type_folder.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename
+        timestamp = datetime.now().strftime('%H-%M-%S')
+        filename = f"{camera_id}_{class_name}_{timestamp}.mp4"
+        filepath = type_folder / filename
+
+        # Start recording thread
+        self.recording_thread = threading.Thread(
+            target=self._record_video,
+            args=(filepath, duration),
+            daemon=True
+        )
+        self.recording_thread.start()
+
+        print(f"[Recording] Started: {filename} ({duration}s)")
+        return str(filepath)
+
+    def _record_video(self, filepath, duration):
+        """Internal recording function"""
+        try:
+            # Get buffered frames (past footage)
+            buffered_frames = []
+            temp_buffer = []
+
+            # Copy all frames from buffer
+            while not self.frame_buffer.empty():
+                try:
+                    frame = self.frame_buffer.get_nowait()
+                    buffered_frames.append(frame)
+                    temp_buffer.append(frame)
+                except queue.Empty:
+                    break
+
+            # Restore frames to buffer for continuous use
+            for frame in temp_buffer:
+                try:
+                    self.frame_buffer.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+            if not buffered_frames:
+                self.is_recording = False
+                return
+
+            # Get frame dimensions
+            height, width = buffered_frames[0].shape[:2]
+
+            # Create video writer with browser-compatible codec
+            # Try different codecs in order of browser compatibility
+            fourcc = None
+            writer = None
+
+            # Codec priority for browser compatibility:
+            # avc1/H264 = H.264 — natively supported by all browsers (best choice)
+            # mp4v       = MPEG-4 Part 2 — NOT supported by Chrome/Firefox/Edge natively
+            # XVID       = MPEG-4 Part 2 variant — same browser support problem as mp4v
+            # MJPG       = Motion JPEG — large files but plays in most browsers
+            codec_priority = [
+                ('avc1', 'H.264'),      # Best: Chrome, Firefox, Edge, Safari all support
+                ('H264', 'H.264 alt'),  # Alternative name on some OpenCV builds
+                ('MJPG', 'Motion JPEG'),# Fallback: large but universally supported
+                ('mp4v', 'MPEG-4'),     # Last resort (browsers may refuse to play)
+            ]
+
+            for codec_code, codec_name in codec_priority:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec_code)
+                    writer = cv2.VideoWriter(str(filepath), fourcc, self.fps, (width, height))
+
+                    if writer.isOpened():
+                        print(f"[Recording] Using {codec_name} codec")
+                        break
+                    else:
+                        writer.release()
+                        writer = None
+                except Exception as e:
+                    print(f"[Recording] {codec_name} codec failed: {e}")
+                    continue
+
+            if writer is None or not writer.isOpened():
+                print("[Recording] ERROR: No compatible video codec available")
+                self.is_recording = False
+                return
+
+            # Write buffered frames (pre-detection footage)
+            for frame in buffered_frames:
+                writer.write(frame)
+
+            print(f"[Recording] Writing {len(buffered_frames)} buffered frames")
+
+            # Continue recording for specified duration
+            start_time = datetime.now()
+            frame_count = len(buffered_frames)
+
+            # Record new frames for the remaining duration
+            import time
+            while (datetime.now() - start_time).seconds < duration:
+                if not self.frame_buffer.empty():
+                    try:
+                        new_frame = self.frame_buffer.get_nowait()
+                        writer.write(new_frame)
+                        frame_count += 1
+                        # Put frame back for other uses
+                        try:
+                            self.frame_buffer.put_nowait(new_frame)
+                        except queue.Full:
+                            pass
+                    except queue.Empty:
+                        pass
+                time.sleep(1.0 / self.fps)
+
+            writer.release()
+            self.is_recording = False
+
+            print(f"[Recording] Completed: {filepath.name} ({frame_count} frames)")
+
+        except Exception as e:
+            print(f"[X] Recording error: {e}")
+            self.is_recording = False
+
+    def get_today_videos(self, detection_type=None):
+        """Get all videos from today"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        today_folder = self.storage_path / today
+
+        if not today_folder.exists():
+            return []
+
+        videos = []
+
+        if detection_type:
+            type_folder = today_folder / detection_type
+            if type_folder.exists():
+                for vid in sorted(type_folder.glob('*.mp4'), reverse=True):
+                    videos.append(self._parse_video_info(vid))
+        else:
+            for vid in sorted(today_folder.rglob('*.mp4'), reverse=True):
+                videos.append(self._parse_video_info(vid))
+
+        return videos
+
+    def _parse_video_info(self, vid_path):
+        """Parse video filename to extract information"""
+        parts = vid_path.stem.split('_')
+        return {
+            'path': str(vid_path.relative_to(self.storage_path)),
+            'full_path': str(vid_path),
+            'filename': vid_path.name,
+            'camera_id': parts[0] if len(parts) > 0 else 'unknown',
+            'class_name': parts[1] if len(parts) > 1 else 'unknown',
+            'timestamp': parts[2] if len(parts) > 2 else '',
+            'type': vid_path.parent.name,
+            'date': vid_path.parent.parent.name,
+            'size': vid_path.stat().st_size,
+            'size_mb': round(vid_path.stat().st_size / (1024 * 1024), 2),
+            'created': datetime.fromtimestamp(vid_path.stat().st_ctime).isoformat()
+        }
+
+
+# Singleton instances
+_screenshot_manager = None
+_video_recorder = None
+
+
+def get_screenshot_manager():
+    """Get singleton screenshot manager instance"""
+    global _screenshot_manager
+    if _screenshot_manager is None:
+        _screenshot_manager = ScreenshotManager()
+    return _screenshot_manager
+
+
+def get_video_recorder():
+    """Get singleton video recorder instance"""
+    global _video_recorder
+    if _video_recorder is None:
+        _video_recorder = VideoRecorder()
+    return _video_recorder
