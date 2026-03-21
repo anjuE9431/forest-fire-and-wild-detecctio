@@ -1,0 +1,340 @@
+"""
+Thermal Camera and Night Vision Support
+Handles thermal imaging, heat signature detection, and low-light enhancement
+"""
+
+import cv2
+import numpy as np
+from pathlib import Path
+from typing import Tuple, Optional, Dict
+import yaml
+
+
+class ThermalImageProcessor:
+    """Process thermal camera images for better detection"""
+
+    def __init__(self, config_path='config.yaml'):
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+
+        self.thermal_config = self.config.get('thermal', {
+            'enable_colormap': True,
+            'colormap': 'jet',
+            'auto_contrast': True,
+            'denoise': True,
+            'heat_threshold': 50,  # Temperature threshold in Celsius
+            'enhance_contrast': True
+        })
+
+    def is_thermal_image(self, frame: np.ndarray) -> bool:
+        """
+        Detect if image is from thermal camera
+        Thermal images are typically grayscale with specific characteristics
+        """
+        if len(frame.shape) == 2:
+            return True  # Single channel (grayscale)
+
+        # Check if all channels are identical (grayscale saved as BGR)
+        if len(frame.shape) == 3:
+            return np.array_equal(frame[:,:,0], frame[:,:,1]) and \
+                   np.array_equal(frame[:,:,1], frame[:,:,2])
+
+        return False
+
+    def process_thermal(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Process thermal image for better visualization and detection
+
+        Args:
+            frame: Raw thermal image (grayscale or BGR)
+
+        Returns:
+            Processed thermal image in BGR format
+        """
+        # Convert to grayscale if needed
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame.copy()
+
+        # Denoise
+        if self.thermal_config['denoise']:
+            gray = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+
+        # Auto-contrast enhancement
+        if self.thermal_config['auto_contrast']:
+            gray = self._auto_contrast(gray)
+
+        # Apply colormap for better visualization
+        if self.thermal_config['enable_colormap']:
+            colormap = self._get_colormap(self.thermal_config['colormap'])
+            colored = cv2.applyColorMap(gray, colormap)
+        else:
+            colored = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        return colored
+
+    def enhance_night_vision(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Enhance low-light images for better night detection
+
+        Args:
+            frame: Low-light BGR image
+
+        Returns:
+            Enhanced BGR image
+        """
+        # Convert to LAB color space
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l)
+
+        # Merge channels
+        lab_enhanced = cv2.merge([l_enhanced, a, b])
+
+        # Convert back to BGR
+        enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+
+        # Additional denoising for night images
+        enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 10, 10, 7, 21)
+
+        # Slight sharpening
+        kernel = np.array([[-1,-1,-1],
+                          [-1, 9,-1],
+                          [-1,-1,-1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel)
+
+        # Blend original and sharpened (70% sharp, 30% original)
+        result = cv2.addWeighted(sharpened, 0.7, enhanced, 0.3, 0)
+
+        return result
+
+    def detect_heat_signatures(self, thermal_frame: np.ndarray) -> Dict:
+        """
+        Detect heat signatures in thermal image
+        Useful for fire detection
+
+        Args:
+            thermal_frame: Grayscale thermal image
+
+        Returns:
+            Dictionary with heat signature info
+        """
+        if len(thermal_frame.shape) == 3:
+            gray = cv2.cvtColor(thermal_frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = thermal_frame.copy()
+
+        # Find hot spots (above threshold)
+        threshold = int(255 * (self.thermal_config['heat_threshold'] / 100))
+        _, hot_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+
+        # Find contours of hot regions
+        contours, _ = cv2.findContours(hot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        heat_signatures = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > 100:  # Minimum area threshold
+                x, y, w, h = cv2.boundingRect(contour)
+
+                # Calculate average temperature in this region
+                roi = gray[y:y+h, x:x+w]
+                avg_temp = np.mean(roi)
+                max_temp = np.max(roi)
+
+                heat_signatures.append({
+                    'bbox': (x, y, w, h),
+                    'area': area,
+                    'avg_intensity': avg_temp,
+                    'max_intensity': max_temp,
+                    'estimated_temp': self._intensity_to_celsius(max_temp)
+                })
+
+        return {
+            'num_hotspots': len(heat_signatures),
+            'hotspots': heat_signatures,
+            'mask': hot_mask
+        }
+
+    def _auto_contrast(self, gray: np.ndarray) -> np.ndarray:
+        """Apply automatic contrast enhancement"""
+        # Calculate percentiles for robust contrast stretching
+        p2, p98 = np.percentile(gray, (2, 98))
+
+        # Stretch contrast
+        stretched = np.clip((gray - p2) * (255 / (p98 - p2)), 0, 255).astype(np.uint8)
+
+        return stretched
+
+    def _get_colormap(self, colormap_name: str) -> int:
+        """Get OpenCV colormap constant"""
+        colormaps = {
+            'jet': cv2.COLORMAP_JET,
+            'hot': cv2.COLORMAP_HOT,
+            'rainbow': cv2.COLORMAP_RAINBOW,
+            'inferno': cv2.COLORMAP_INFERNO,
+            'plasma': cv2.COLORMAP_PLASMA,
+            'turbo': cv2.COLORMAP_TURBO
+        }
+        return colormaps.get(colormap_name.lower(), cv2.COLORMAP_JET)
+
+    def _intensity_to_celsius(self, intensity: float) -> float:
+        """
+        Convert pixel intensity to approximate temperature
+        This is a simplified conversion - real thermal cameras use calibration
+        """
+        # Assume intensity 0-255 maps to -20 to 100 Celsius
+        min_temp = -20
+        max_temp = 100
+        temp = min_temp + (intensity / 255.0) * (max_temp - min_temp)
+        return round(temp, 1)
+
+
+class ThermalCameraManager:
+    """Manage thermal camera sources"""
+
+    def __init__(self):
+        self.processor = ThermalImageProcessor()
+        self.thermal_cameras = {}  # camera_id -> camera_type mapping
+
+    def register_thermal_camera(self, camera_id: str, camera_type: str = 'thermal'):
+        """
+        Register a camera as thermal
+
+        Args:
+            camera_id: Camera identifier
+            camera_type: 'thermal' or 'night_vision'
+        """
+        self.thermal_cameras[camera_id] = camera_type
+        print(f"[OK] Registered {camera_type} camera: {camera_id}")
+
+    def is_thermal_camera(self, camera_id: str) -> bool:
+        """Check if camera is thermal"""
+        return camera_id in self.thermal_cameras
+
+    def get_camera_type(self, camera_id: str) -> Optional[str]:
+        """Get camera type"""
+        return self.thermal_cameras.get(camera_id)
+
+    def process_frame(self, frame: np.ndarray, camera_id: str) -> Tuple[np.ndarray, Optional[Dict]]:
+        """
+        Process frame based on camera type
+
+        Args:
+            frame: Input frame
+            camera_id: Camera identifier
+
+        Returns:
+            Tuple of (processed_frame, heat_signature_data)
+        """
+        camera_type = self.get_camera_type(camera_id)
+        heat_data = None
+
+        if camera_type == 'thermal':
+            # Process as thermal image
+            processed = self.processor.process_thermal(frame)
+
+            # Detect heat signatures for fire detection
+            heat_data = self.processor.detect_heat_signatures(frame)
+
+        elif camera_type == 'night_vision':
+            # Enhance night vision image
+            processed = self.processor.enhance_night_vision(frame)
+
+        else:
+            # Regular camera - check if it's low light
+            if self._is_low_light(frame):
+                processed = self.processor.enhance_night_vision(frame)
+            else:
+                processed = frame
+
+        return processed, heat_data
+
+    def _is_low_light(self, frame: np.ndarray) -> bool:
+        """Detect if image is low-light"""
+        # Convert to grayscale
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame
+
+        # Calculate average brightness
+        avg_brightness = np.mean(gray)
+
+        # If average brightness is below 80 (out of 255), consider it low-light
+        return avg_brightness < 80
+
+    def draw_heat_signatures(self, frame: np.ndarray, heat_data: Dict) -> np.ndarray:
+        """
+        Draw heat signature bounding boxes on frame
+
+        Args:
+            frame: Frame to draw on
+            heat_data: Heat signature data from detect_heat_signatures()
+
+        Returns:
+            Frame with heat signatures drawn
+        """
+        if not heat_data or not heat_data['hotspots']:
+            return frame
+
+        annotated = frame.copy()
+
+        for hotspot in heat_data['hotspots']:
+            x, y, w, h = hotspot['bbox']
+            temp = hotspot['estimated_temp']
+
+            # Draw bounding box (red for hot spots)
+            cv2.rectangle(annotated, (x, y), (x+w, y+h), (0, 0, 255), 2)
+
+            # Draw temperature label
+            label = f"Heat: {temp}C"
+            cv2.putText(annotated, label, (x, y-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        # Add heat signature count
+        cv2.putText(annotated, f"Hotspots: {heat_data['num_hotspots']}", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        return annotated
+
+
+# Singleton instance
+_thermal_manager = None
+
+
+def get_thermal_manager() -> ThermalCameraManager:
+    """Get singleton thermal camera manager"""
+    global _thermal_manager
+    if _thermal_manager is None:
+        _thermal_manager = ThermalCameraManager()
+    return _thermal_manager
+
+
+# Utility functions for easy integration
+
+def process_thermal_frame(frame: np.ndarray, camera_id: str) -> np.ndarray:
+    """
+    Quick function to process thermal frame
+
+    Usage:
+        processed_frame = process_thermal_frame(raw_frame, 'cam_1')
+    """
+    manager = get_thermal_manager()
+    processed, _ = manager.process_frame(frame, camera_id)
+    return processed
+
+
+def enhance_night_frame(frame: np.ndarray) -> np.ndarray:
+    """
+    Quick function to enhance night vision frame
+
+    Usage:
+        enhanced_frame = enhance_night_frame(dark_frame)
+    """
+    processor = ThermalImageProcessor()
+    return processor.enhance_night_vision(frame)
