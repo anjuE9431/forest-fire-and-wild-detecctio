@@ -1,0 +1,19 @@
+Date,Timestamp,Camera_ID,Location,Detection_Type,Class_Name,Confidence,BBox_X1,BBox_Y1,BBox_X2,BBox_Y2
+2026-01-08,2026-01-08 08:15:23,cam_1,Zone A - North Forest,fire,smoke,0.85,120,45,340,280
+2026-01-08,2026-01-08 09:32:41,cam_1,Zone A - North Forest,animal,deer,0.92,200,150,450,380
+2026-01-08,2026-01-08 10:45:12,cam_1,Zone A - North Forest,animal,elephant,0.88,100,80,520,420
+2026-01-08,2026-01-08 12:22:33,cam_1,Zone A - North Forest,fire,fire,0.95,80,60,280,240
+2026-01-08,2026-01-08 14:18:56,cam_1,Zone A - North Forest,animal,tiger,0.91,150,120,380,340
+2026-01-08,2026-01-08 15:42:17,cam_1,Zone A - North Forest,animal,deer,0.87,220,180,420,380
+2026-01-08,2026-01-08 17:05:29,cam_1,Zone A - North Forest,fire,smoke,0.78,140,90,320,260
+2026-01-07,2026-01-07 07:12:45,cam_1,Zone A - North Forest,animal,wild_boar,0.82,180,140,400,320
+2026-01-07,2026-01-07 09:28:33,cam_1,Zone A - North Forest,animal,deer,0.89,210,160,430,360
+2026-01-07,2026-01-07 11:45:21,cam_1,Zone A - North Forest,fire,smoke,0.83,110,70,290,230
+2026-01-07,2026-01-07 13:33:12,cam_1,Zone A - North Forest,animal,leopard,0.94,170,130,370,330
+2026-01-07,2026-01-07 15:22:48,cam_1,Zone A - North Forest,animal,monkey,0.86,190,150,390,340
+2026-01-07,2026-01-07 17:18:55,cam_1,Zone A - North Forest,fire,fire,0.93,90,65,270,230
+2026-01-06,2026-01-06 08:42:19,cam_1,Zone A - North Forest,animal,bear,0.90,160,110,380,320
+2026-01-06,2026-01-06 10:15:37,cam_1,Zone A - North Forest,animal,deer,0.85,200,160,420,380
+2026-01-06,2026-01-06 12:28:44,cam_1,Zone A - North Forest,fire,smoke,0.79,130,85,310,250
+2026-01-06,2026-01-06 14:52:11,cam_1,Zone A - North Forest,animal,bison,0.88,140,100,360,310
+2026-01-06,2026-01-06 16:33:29,cam_1,Zone A - North Forest,animal,elephant,0.92,120,90,500,410
