@@ -1,0 +1,248 @@
+"""
+Fast Animal Detection Model Training Script
+Optimized for quick training with smaller dataset
+"""
+
+import os
+import yaml
+from ultralytics import YOLO
+import torch
+from pathlib import Path
+import shutil
+from datetime import datetime
+
+class FastAnimalDetectionTrainer:
+    def __init__(self, config_path='config.yaml'):
+
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+
+        self.animal_config = self.config['training']['animal']
+        self.model_config = self.config['models']['animal_detection']
+
+        self.setup_directories()
+
+    def setup_directories(self):
+
+        dirs = [
+            'datasets/animals/train/images',
+            'datasets/animals/train/labels',
+            'datasets/animals/val/images',
+            'datasets/animals/val/labels',
+            'datasets/animals/test/images',
+            'datasets/animals/test/labels',
+            'models',
+            'runs/animals',
+            'logs'
+        ]
+        for dir_path in dirs:
+            Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+    def create_dataset_yaml(self):
+
+        dataset_config = {
+            'path': os.path.abspath('datasets/animals'),
+            'train': 'train/images',
+            'val': 'val/images',
+            'test': 'test/images',
+            'nc': len(self.model_config['classes']),
+            'names': self.model_config['classes']
+        }
+
+        yaml_path = 'datasets/animals/data.yaml'
+        with open(yaml_path, 'w') as f:
+            yaml.dump(dataset_config, f, default_flow_style=False)
+
+        print(f"[OK] Dataset configuration created")
+        print(f"[OK] Number of animal classes: {len(self.model_config['classes'])}")
+        return yaml_path
+
+    def prepare_model(self):
+
+        model = YOLO('yolov8n.pt')  
+        print("[OK] Model initialized with YOLOv8n (fastest)")
+        return model
+
+    def train(self):
+
+        print("\n" + "="*60)
+        print("Fast Animal Detection Model Training")
+        print("="*60 + "\n")
+
+
+        data_yaml = self.create_dataset_yaml()
+
+
+        model = self.prepare_model()
+
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"[OK] Training on: {device.upper()}")
+
+
+        train_params = {
+            'data': data_yaml,
+            'epochs': 50,             
+            'batch': 8,                
+            'imgsz': 416,              
+            'lr0': 0.01,               
+            'weight_decay': 0.0005,
+            'optimizer': 'SGD',        
+            'patience': 10,            
+            'device': device,
+            'project': 'runs/animals',
+            'name': f'fast_train_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+            'exist_ok': True,
+            'pretrained': True,
+            'verbose': True,
+
+            # Minimal augmentation for speed
+            'hsv_h': 0.01,
+            'hsv_s': 0.3,
+            'hsv_v': 0.2,
+            'degrees': 5,
+            'flipud': 0.0,
+            'fliplr': 0.5,
+            'mosaic': 0.5,            # Reduced
+            'mixup': 0.0,             # Disabled
+
+            # Performance settings
+            'cache': True,             # Cache images in RAM (faster!)
+            'workers': 2,              # Reduced workers
+            'save': True,
+            'save_period': -1,         # Only save best and last
+            'plots': False,            # Disable plots for speed
+            'val': True,
+            'amp': True,               # Automatic Mixed Precision (faster on GPU)
+            'close_mosaic': 10,        # Disable mosaic in last 10 epochs
+        }
+
+        print("\nOptimized Training Parameters:")
+        print(f"  Epochs: {train_params['epochs']} (reduced for speed)")
+        print(f"  Batch Size: {train_params['batch']}")
+        print(f"  Image Size: {train_params['imgsz']}x{train_params['imgsz']}")
+        print(f"  Model: YOLOv8n (fastest variant)")
+        print(f"  Cache: {train_params['cache']} (images loaded to RAM)")
+        print(f"  Mixed Precision: {train_params['amp']} (faster on GPU)")
+        print()
+
+        # Estimate time
+        if device == 'cuda':
+            print("Estimated time: 10-15 minutes")
+        else:
+            print("Estimated time: 30-45 minutes (CPU)")
+        print()
+
+        try:
+            # Train the model
+            print("Starting training...\n")
+            results = model.train(**train_params)
+
+            # Save the best model
+            best_model_path = os.path.join(train_params['project'],
+                                          train_params['name'],
+                                          'weights',
+                                          'best.pt')
+
+            if os.path.exists(best_model_path):
+                shutil.copy(best_model_path, self.model_config['model_path'])
+                print(f"\n[OK] Best model saved to: {self.model_config['model_path']}")
+
+            # Print training summary
+            print("\n" + "="*60)
+            print("Training Completed Successfully!")
+            print("="*60)
+            print(f"Results saved in: {train_params['project']}/{train_params['name']}")
+
+            return results
+
+        except Exception as e:
+            print(f"\n[X] Training failed: {str(e)}")
+            raise
+
+    def validate(self, model_path=None):
+        """Validate the trained model"""
+        if model_path is None:
+            model_path = self.model_config['model_path']
+
+        if not os.path.exists(model_path):
+            print(f"[X] Model not found at {model_path}")
+            return None
+
+        print("\n" + "="*60)
+        print("Validating Animal Detection Model")
+        print("="*60 + "\n")
+
+        model = YOLO(model_path)
+        results = model.val(data='datasets/animals/data.yaml', imgsz=416)
+
+        print("\nValidation Metrics:")
+        print(f"  mAP50: {results.box.map50:.4f}")
+        print(f"  mAP50-95: {results.box.map:.4f}")
+
+        return results
+
+
+def main():
+    """Main training function"""
+    print("\n" + "="*60)
+    print("   Fast Animal Detection Training")
+    print("   Optimized for Speed with Small Dataset")
+    print("="*60)
+
+    # Initialize trainer
+    trainer = FastAnimalDetectionTrainer()
+
+    # Check if dataset exists
+    train_images = Path('datasets/animals/train/images')
+    if not train_images.exists() or not list(train_images.glob('*')):
+        print("\n[X] WARNING: No training images found!")
+        print("Please ensure dataset is prepared:")
+        print("  1. Run: python fix_dataset.py")
+        print("  2. Run: python cleanup_orphans.py")
+        return
+
+    # Count images
+    train_count = len(list(train_images.glob('*.jpg'))) + len(list(train_images.glob('*.png')))
+    val_images = Path('datasets/animals/val/images')
+    val_count = len(list(val_images.glob('*.jpg'))) + len(list(val_images.glob('*.png'))) if val_images.exists() else 0
+
+    print(f"\nDataset size:")
+    print(f"  Training: {train_count} images")
+    print(f"  Validation: {val_count} images")
+
+    if train_count < 50:
+        print("\n[!] WARNING: Very small dataset!")
+        print("    Training will work but accuracy may be limited.")
+        print("    Consider adding more images for better results.")
+
+    # Confirm before starting
+    print("\n" + "="*60)
+    proceed = input("Start fast training? (y/n): ")
+    if proceed.lower() != 'y':
+        print("Training cancelled.")
+        return
+
+    # Start training
+    try:
+        results = trainer.train()
+
+        # Validate after training
+        print("\nRunning validation on best model...")
+        trainer.validate()
+
+        print("\n[OK] Training pipeline completed successfully!")
+        print("\nNext steps:")
+        print("  1. Check results in runs/animals/")
+        print("  2. Test model: python test_model.py --model animal --source webcam")
+        print("  3. Run Flask app: python app.py")
+
+    except KeyboardInterrupt:
+        print("\n\n[!] Training interrupted by user")
+    except Exception as e:
+        print(f"\n[X] Error during training: {str(e)}")
+        raise
+
+
+if __name__ == '__main__':
+    main()
