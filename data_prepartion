@@ -1,0 +1,336 @@
+"""
+Data Preparation and Preprocessing Utilities
+Handles dataset organization, splitting, and preprocessing
+"""
+
+import os
+import shutil
+from pathlib import Path
+import random
+from typing import List, Tuple
+import yaml
+from tqdm import tqdm
+import cv2
+import numpy as np
+
+
+class DatasetPreparation:
+    """Prepare and organize datasets for YOLO training"""
+
+    def __init__(self, source_dir: str, dest_dir: str, split_ratio: Tuple[float, float, float] = (0.7, 0.2, 0.1)):
+        """
+        Initialize dataset preparation
+
+        Args:
+            source_dir: Source directory containing images and labels
+            dest_dir: Destination directory for organized dataset
+            split_ratio: (train, val, test) split ratios
+        """
+        self.source_dir = Path(source_dir)
+        self.dest_dir = Path(dest_dir)
+        self.train_ratio, self.val_ratio, self.test_ratio = split_ratio
+
+        assert abs(sum(split_ratio) - 1.0) < 1e-6, "Split ratios must sum to 1.0"
+
+    def organize_dataset(self, image_ext: List[str] = ['.jpg', '.jpeg', '.png']):
+        """
+        Organize images and labels into train/val/test splits
+
+        Args:
+            image_ext: List of image file extensions to consider
+        """
+        print(f"Organizing dataset from {self.source_dir} to {self.dest_dir}")
+
+        # Create directory structure
+        for split in ['train', 'val', 'test']:
+            (self.dest_dir / split / 'images').mkdir(parents=True, exist_ok=True)
+            (self.dest_dir / split / 'labels').mkdir(parents=True, exist_ok=True)
+
+        # Get all image files
+        image_files = []
+        for ext in image_ext:
+            image_files.extend(list(self.source_dir.glob(f'**/*{ext}')))
+
+        print(f"Found {len(image_files)} images")
+
+        # Shuffle for random split
+        random.shuffle(image_files)
+
+        # Calculate split indices
+        total = len(image_files)
+        train_end = int(total * self.train_ratio)
+        val_end = train_end + int(total * self.val_ratio)
+
+        splits = {
+            'train': image_files[:train_end],
+            'val': image_files[train_end:val_end],
+            'test': image_files[val_end:]
+        }
+
+        # Copy files to appropriate directories
+        stats = {'train': 0, 'val': 0, 'test': 0, 'missing_labels': 0}
+
+        for split_name, files in splits.items():
+            print(f"\nProcessing {split_name} split...")
+
+            for img_path in tqdm(files):
+                # Get corresponding label file
+                label_path = img_path.with_suffix('.txt')
+
+                if not label_path.exists():
+                    stats['missing_labels'] += 1
+                    continue
+
+                # Copy image
+                dest_img = self.dest_dir / split_name / 'images' / img_path.name
+                shutil.copy2(img_path, dest_img)
+
+                # Copy label
+                dest_label = self.dest_dir / split_name / 'labels' / label_path.name
+                shutil.copy2(label_path, dest_label)
+
+                stats[split_name] += 1
+
+        # Print statistics
+        print("\n" + "="*50)
+        print("Dataset Organization Complete")
+        print("="*50)
+        print(f"Train: {stats['train']} images")
+        print(f"Val: {stats['val']} images")
+        print(f"Test: {stats['test']} images")
+        print(f"Missing labels: {stats['missing_labels']}")
+
+        return stats
+
+    def verify_labels(self, split: str = 'train'):
+        """
+        Verify label files are in correct YOLO format
+
+        Args:
+            split: Dataset split to verify (train/val/test)
+        """
+        label_dir = self.dest_dir / split / 'labels'
+        label_files = list(label_dir.glob('*.txt'))
+
+        print(f"\nVerifying {len(label_files)} label files in {split} split...")
+
+        errors = []
+        for label_file in tqdm(label_files):
+            try:
+                with open(label_file, 'r') as f:
+                    for line_num, line in enumerate(f, 1):
+                        parts = line.strip().split()
+                        if len(parts) != 5:
+                            errors.append(f"{label_file.name}:{line_num} - Expected 5 values, got {len(parts)}")
+                            continue
+
+                        class_id, x, y, w, h = parts
+                        class_id = int(class_id)
+                        x, y, w, h = float(x), float(y), float(w), float(h)
+
+                        # Verify ranges
+                        if not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
+                            errors.append(f"{label_file.name}:{line_num} - Coordinates out of range [0,1]")
+
+            except Exception as e:
+                errors.append(f"{label_file.name} - {str(e)}")
+
+        if errors:
+            print(f"\n⚠ Found {len(errors)} errors:")
+            for error in errors[:10]:  # Show first 10 errors
+                print(f"  {error}")
+            if len(errors) > 10:
+                print(f"  ... and {len(errors) - 10} more")
+        else:
+            print("✓ All labels are valid")
+
+        return errors
+
+
+class ImagePreprocessor:
+    """Preprocess images for better training"""
+
+    @staticmethod
+    def resize_images(source_dir: str, target_size: Tuple[int, int] = (640, 640)):
+        """
+        Resize all images to target size
+
+        Args:
+            source_dir: Directory containing images
+            target_size: Target (width, height)
+        """
+        image_dir = Path(source_dir)
+        image_files = list(image_dir.glob('**/*.jpg')) + \
+                     list(image_dir.glob('**/*.png')) + \
+                     list(image_dir.glob('**/*.jpeg'))
+
+        print(f"Resizing {len(image_files)} images to {target_size}")
+
+        for img_path in tqdm(image_files):
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+
+            resized = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+            cv2.imwrite(str(img_path), resized)
+
+        print("✓ Resizing complete")
+
+    @staticmethod
+    def enhance_images(source_dir: str, brightness: float = 1.0, contrast: float = 1.0):
+        """
+        Enhance image brightness and contrast
+
+        Args:
+            source_dir: Directory containing images
+            brightness: Brightness factor
+            contrast: Contrast factor
+        """
+        image_dir = Path(source_dir)
+        image_files = list(image_dir.glob('**/*.jpg')) + \
+                     list(image_dir.glob('**/*.png')) + \
+                     list(image_dir.glob('**/*.jpeg'))
+
+        print(f"Enhancing {len(image_files)} images")
+
+        for img_path in tqdm(image_files):
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+
+            # Adjust brightness and contrast
+            enhanced = cv2.convertScaleAbs(img, alpha=contrast, beta=brightness)
+            cv2.imwrite(str(img_path), enhanced)
+
+        print("✓ Enhancement complete")
+
+    @staticmethod
+    def remove_corrupted_images(source_dir: str):
+        """
+        Remove corrupted or unreadable images
+
+        Args:
+            source_dir: Directory containing images
+        """
+        image_dir = Path(source_dir)
+        image_files = list(image_dir.glob('**/*.jpg')) + \
+                     list(image_dir.glob('**/*.png')) + \
+                     list(image_dir.glob('**/*.jpeg'))
+
+        print(f"Checking {len(image_files)} images for corruption")
+
+        removed = 0
+        for img_path in tqdm(image_files):
+            img = cv2.imread(str(img_path))
+            if img is None:
+                print(f"Removing corrupted: {img_path.name}")
+                img_path.unlink()
+
+                # Remove corresponding label if exists
+                label_path = img_path.with_suffix('.txt')
+                if label_path.exists():
+                    label_path.unlink()
+
+                removed += 1
+
+        print(f"✓ Removed {removed} corrupted images")
+
+
+def download_sample_datasets():
+    """
+    Guide for downloading sample datasets for fire and animal detection
+    """
+    print("""
+    ╔══════════════════════════════════════════════════════════╗
+    ║          Sample Dataset Download Guide                   ║
+    ╚══════════════════════════════════════════════════════════╝
+
+    FIRE AND SMOKE DETECTION DATASETS:
+    ----------------------------------
+    1. Roboflow - Fire Detection Dataset
+       URL: https://universe.roboflow.com/search?q=fire+detection
+       - Multiple fire and smoke detection datasets
+       - Pre-annotated in YOLO format
+       - Direct download option
+
+    2. Kaggle - Fire Detection Dataset
+       URL: https://www.kaggle.com/datasets/phylake1337/fire-dataset
+       - Large collection of fire images
+       - Requires manual annotation
+
+    3. D-Fire Dataset
+       - Research dataset for fire detection
+       - Contains fire and smoke images
+       - Available through academic channels
+
+    WILD ANIMAL DETECTION DATASETS:
+    -------------------------------
+    1. Roboflow - Wildlife Detection
+       URL: https://universe.roboflow.com/search?q=wildlife
+       - Various wildlife datasets
+       - Pre-annotated in YOLO format
+
+    2. Kaggle - Wildlife Dataset
+       URL: https://www.kaggle.com/datasets/virtualdvid/oregon-wildlife
+       - Oregon Wildlife images
+       - Multiple animal species
+
+    3. iNaturalist Dataset
+       URL: https://www.inaturalist.org/
+       - Massive biodiversity dataset
+       - Requires filtering and annotation
+
+    4. COCO Dataset (Wildlife subset)
+       URL: https://cocodataset.org/
+       - Contains animal categories
+       - Can be filtered for wildlife
+
+    ANNOTATION TOOLS:
+    -----------------
+    1. LabelImg: https://github.com/tzutalin/labelImg
+    2. Roboflow: https://roboflow.com/
+    3. CVAT: https://www.cvat.ai/
+
+    AFTER DOWNLOADING:
+    ------------------
+    1. Place images in appropriate directories
+    2. Ensure labels are in YOLO format
+    3. Run this script to organize and verify data
+    """)
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Dataset Preparation Utility')
+    parser.add_argument('--source', type=str, help='Source directory with images and labels')
+    parser.add_argument('--dest', type=str, help='Destination directory')
+    parser.add_argument('--type', type=str, choices=['fire', 'animal'], help='Dataset type')
+    parser.add_argument('--download-guide', action='store_true', help='Show dataset download guide')
+    parser.add_argument('--verify', action='store_true', help='Verify labels only')
+
+    args = parser.parse_args()
+
+    if args.download_guide:
+        download_sample_datasets()
+    elif args.source and args.dest:
+        prep = DatasetPreparation(args.source, args.dest)
+
+        if args.verify:
+            prep.verify_labels('train')
+            prep.verify_labels('val')
+            prep.verify_labels('test')
+        else:
+            # Organize dataset
+            prep.organize_dataset()
+
+            # Verify labels
+            prep.verify_labels('train')
+
+            print("\n✓ Dataset preparation complete!")
+            print(f"Dataset ready at: {args.dest}")
+    else:
+        print("Usage examples:")
+        print("  python data_preparation.py --download-guide")
+        print("  python data_preparation.py --source ./raw_data --dest ./datasets/fire --type fire")
+        print("  python data_preparation.py --source ./datasets/fire --dest ./datasets/fire --verify")
