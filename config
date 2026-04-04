@@ -1,0 +1,67 @@
+# Project Configuration
+project:
+  name: "Forest Fire and Animal Detection"
+  version: "2.0.0"
+  description: "ML-based forest monitoring system"
+
+# Model configurations
+models:
+  fire_detection:
+    model_path: "models/fire_detection.pt"
+    input_size: 640
+    confidence_threshold: 0.5
+    iou_threshold: 0.45
+    classes: ["fire", "smoke"]
+
+  animal_detection:
+    model_path: "models/animal_detection.pt"
+    input_size: 640
+    confidence_threshold: 0.6
+    iou_threshold: 0.45
+    classes: ["deer", "elephant", "tiger", "bear", "leopard", "wild_boar", "monkey", "bison"]
+
+# Alert system
+alerts:
+  enabled: true
+  email:
+    enabled: true
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    sender_email: "your_email@gmail.com"
+    receiver_emails: ["forest_official@example.com"]
+
+  fire_alert_cooldown: 300
+  animal_alert_cooldown: 600
+
+# Camera/Stream settings
+camera:
+  sources:
+    - id: "cam_1"
+      url: 0
+      location: "Zone A - North Forest"
+      type: "normal"
+      enabled: true
+    - id: "cam_2"
+      url: 1
+      location: "Zone B - South Forest"
+      type: "normal"
+      enabled: false
+
+  frame_rate: 5
+  save_detections: true
+  detection_storage: "detections/"
+
+# Thermal camera settings
+thermal:
+  enable_colormap: true
+  colormap: "jet"
+  auto_contrast: true
+  denoise: true
+  heat_threshold: 50
+  enhance_contrast: true
+
+# Flask settings
+flask:
+  host: "0.0.0.0"
+  port: 5000
+  debug: true
